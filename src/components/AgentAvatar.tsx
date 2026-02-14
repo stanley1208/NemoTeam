@@ -6,14 +6,15 @@ import { cn } from "@/lib/utils";
 
 interface AgentAvatarProps {
   role: AgentRole;
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "md" | "lg" | "xl";
   isActive?: boolean;
 }
 
 const sizeClasses = {
-  sm: "h-7 w-7 text-sm",
-  md: "h-9 w-9 text-lg",
-  lg: "h-12 w-12 text-2xl",
+  sm: "h-7 w-7 text-sm rounded-lg",
+  md: "h-10 w-10 text-xl rounded-xl",
+  lg: "h-14 w-14 text-2xl rounded-2xl",
+  xl: "h-20 w-20 text-4xl rounded-2xl",
 };
 
 export default function AgentAvatar({
@@ -26,7 +27,7 @@ export default function AgentAvatar({
   return (
     <div
       className={cn(
-        "relative flex items-center justify-center rounded-xl border transition-all duration-300",
+        "relative flex items-center justify-center border transition-all duration-300",
         agent.bgColor,
         agent.borderColor,
         sizeClasses[size],

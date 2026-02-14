@@ -6,7 +6,7 @@ import Link from "next/link";
 export default function Header() {
   return (
     <header className="sticky top-0 z-50 border-b border-white/5 bg-surface/80 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 max-w-screen-2xl items-center justify-between px-6">
+      <div className="section-wrapper flex h-16 items-center justify-between">
         <Link href="/" className="flex items-center gap-3 group">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-nvidia/10 border border-nvidia/20 group-hover:bg-nvidia/20 transition-colors">
             <Bot className="h-5 w-5 text-nvidia" />

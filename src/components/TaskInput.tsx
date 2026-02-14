@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Send, Loader2 } from "lucide-react";
+import { Send, Loader2, ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface TaskInputProps {
@@ -60,69 +60,63 @@ export default function TaskInput({
   }
 
   return (
-    <div className="w-full max-w-2xl mx-auto">
-      <form onSubmit={handleSubmit}>
-        <div className="relative">
-          <textarea
-            value={task}
-            onChange={(e) => setTask(e.target.value)}
-            placeholder="Describe a coding task for the team..."
-            rows={4}
-            disabled={isLoading}
-            className="w-full rounded-2xl bg-surface-raised border border-white/10 px-5 py-4 text-base text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-nvidia/30 focus:border-nvidia/30 disabled:opacity-50 resize-none transition-all"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                handleSubmit(e);
-              }
-            }}
-          />
-          <div className="absolute bottom-3 right-3">
-            <button
-              type="submit"
-              disabled={!task.trim() || isLoading}
-              className={cn(
-                "flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition-all",
-                task.trim() && !isLoading
-                  ? "bg-nvidia text-black hover:bg-nvidia-light shadow-lg shadow-nvidia/20"
-                  : "bg-white/5 text-zinc-600 cursor-not-allowed"
-              )}
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Running...
-                </>
-              ) : (
-                <>
-                  <Send className="h-4 w-4" />
-                  Run Team
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-        <p className="text-xs text-zinc-600 mt-2 text-center">
-          Press Ctrl+Enter to submit
-        </p>
-      </form>
-
-      <div className="mt-6">
-        <p className="text-xs text-zinc-500 text-center mb-3">
-          Try an example:
-        </p>
-        <div className="flex flex-wrap justify-center gap-2">
-          {EXAMPLE_TASKS.map((example) => (
-            <button
-              key={example}
-              onClick={() => setTask(example)}
-              disabled={isLoading}
-              className="rounded-lg bg-white/[0.03] border border-white/5 px-3 py-1.5 text-xs text-zinc-400 hover:text-white hover:bg-white/[0.06] hover:border-white/10 transition-all disabled:opacity-50"
-            >
-              {example}
-            </button>
-          ))}
+    <form onSubmit={handleSubmit} className="w-full">
+      <div className="glass-card overflow-hidden !rounded-2xl">
+        <textarea
+          value={task}
+          onChange={(e) => setTask(e.target.value)}
+          placeholder="Describe a coding task for the team..."
+          rows={4}
+          disabled={isLoading}
+          className="w-full bg-transparent px-7 pt-6 pb-4 text-base text-white placeholder-zinc-500 focus:outline-none disabled:opacity-50 resize-none"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              handleSubmit(e);
+            }
+          }}
+        />
+        <div className="flex items-center justify-between px-6 pb-5">
+          <p className="text-xs text-zinc-600">
+            Ctrl + Enter to submit
+          </p>
+          <button
+            type="submit"
+            disabled={!task.trim() || isLoading}
+            className={cn(
+              "flex items-center gap-2.5 rounded-xl px-6 py-3 text-sm font-semibold transition-all duration-200",
+              task.trim() && !isLoading
+                ? "bg-nvidia text-black hover:bg-nvidia-light shadow-lg shadow-nvidia/25 hover:shadow-nvidia/40"
+                : "bg-white/5 text-zinc-600 cursor-not-allowed"
+            )}
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Running...
+              </>
+            ) : (
+              <>
+                Run Team
+                <ArrowRight className="h-4 w-4" />
+              </>
+            )}
+          </button>
         </div>
       </div>
-    </div>
+
+      <div className="mt-6 flex flex-wrap justify-center gap-2">
+        {EXAMPLE_TASKS.map((example) => (
+          <button
+            key={example}
+            type="button"
+            onClick={() => setTask(example)}
+            disabled={isLoading}
+            className="rounded-full bg-white/[0.03] border border-white/[0.06] px-4 py-2 text-xs text-zinc-500 hover:text-white hover:bg-white/[0.06] hover:border-white/[0.12] transition-all disabled:opacity-50"
+          >
+            {example}
+          </button>
+        ))}
+      </div>
+    </form>
   );
 }
