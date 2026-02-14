@@ -142,11 +142,15 @@ function saveCodeBlocks(blocks: CodeBlock[]): string[] {
         : `file_${i + 1}.${ext}`;
     }
 
-    // Normalize slashes to OS separator but PRESERVE directory structure
+    // Normalize slashes to forward slashes
     const normalizedName = filename.replace(/\\/g, "/");
 
-    // Remove any leading slashes or dots for safety
-    const safeName = normalizedName.replace(/^[./\\]+/, "").replace(/[^a-zA-Z0-9._/\\-]/g, "_");
+    // Remove any leading slashes, dots, and strip "output/" prefix if the AI included it
+    // (since we already save into OUTPUT_DIR, we don't want output/output/)
+    const safeName = normalizedName
+      .replace(/^[./\\]+/, "")
+      .replace(/^output\//i, "")
+      .replace(/[^a-zA-Z0-9._/\\-]/g, "_");
 
     // Remove the "// filename: ..." comment line from the code before saving
     const cleanCode = block.code.replace(
@@ -188,13 +192,31 @@ function getCudaDllPaths(): string {
   if (_cachedCudaPaths !== null) return _cachedCudaPaths;
 
   try {
-    // Ask Python where the CUDA DLLs are
+    // Ask Python where the CUDA DLLs are.
+    // Uses a safe approach: checks that find_spec returns non-None AND has a valid origin.
+    // Some packages (namespace packages) have origin=None, so we must handle that.
+    const pyScript = [
+      "import importlib.util, os",
+      "paths = []",
+      "for pkg, subdir in [('torch','lib'),('nvidia.cuda_nvrtc','bin')]:",
+      "    spec = importlib.util.find_spec(pkg)",
+      "    if spec and spec.origin and spec.origin != 'None':",
+      "        paths.append(os.path.join(os.path.dirname(spec.origin), subdir))",
+      "    elif spec and spec.submodule_search_locations:",
+      "        for loc in spec.submodule_search_locations:",
+      "            candidate = os.path.join(loc, subdir)",
+      "            if os.path.isdir(candidate):",
+      "                paths.append(candidate)",
+      "                break",
+      "            parent = os.path.join(os.path.dirname(loc), subdir)",
+      "            if os.path.isdir(parent):",
+      "                paths.append(parent)",
+      "                break",
+      "print(os.pathsep.join([p for p in paths if os.path.isdir(p)]))",
+    ].join("\n");
+
     const result = execSync(
-      'python -c "import importlib.util, os; paths=[]; ' +
-      '[paths.append(os.path.join(os.path.dirname(importlib.util.find_spec(p).origin), d)) ' +
-      'for p,d in [(\'torch\',\'lib\'),(\'nvidia.cuda_nvrtc\',\'bin\')] ' +
-      'if importlib.util.find_spec(p)]; ' +
-      'print(os.pathsep.join([p for p in paths if os.path.isdir(p)]))"',
+      `python -c "${pyScript.replace(/"/g, '\\"')}"`,
       { encoding: "utf-8", timeout: 10000, windowsHide: true }
     ).trim();
     _cachedCudaPaths = result;
