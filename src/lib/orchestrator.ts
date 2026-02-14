@@ -6,8 +6,8 @@ import * as path from "path";
 import { execSync } from "child_process";
 
 const MAX_EVOLUTION_CYCLES = 3;
-const MAX_EXECUTION_RETRIES = 3;
-const EXECUTION_TIMEOUT_MS = 60000; // 60 second timeout (GPU benchmarks need more time)
+const MAX_EXECUTION_RETRIES = 10;
+const EXECUTION_TIMEOUT_MS = 120000; // 120 second timeout (GPU benchmarks / CPU comparisons need time)
 const OUTPUT_DIR = path.join(process.cwd(), "output");
 
 /**
@@ -754,12 +754,84 @@ export async function* runOrchestration(
   // PHASE 3: Save, Execute, and Auto-Debug
   //
   // Save code → Run it → If error, Debugger
-  // fixes → Re-save → Re-run until success
-  // or max retries.
+  // fixes → Re-save → Re-run.
+  // Tracks repeated errors and escalates
+  // instructions when the same bug recurs.
+  // Never gives up until max retries exhausted.
   // ──────────────────────────────────────────
 
   let executionSuccess = false;
   let executionAttempt = 0;
+  const previousErrors: string[] = []; // Track error signatures to detect repeats
+
+  /**
+   * Extract a short "signature" from an error so we can detect repeats.
+   * Takes the last meaningful error line (e.g. "ValueError: operands could not be broadcast...").
+   */
+  function getErrorSignature(error: string): string {
+    const lines = error.split("\n").map((l) => l.trim()).filter(Boolean);
+    // Find the last line that looks like an actual error (ErrorType: message)
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/Error:|Exception:|FAILED|error occurred/i.test(lines[i])) {
+        return lines[i].slice(0, 150); // cap length
+      }
+    }
+    return lines.slice(-1)[0]?.slice(0, 150) || "unknown error";
+  }
+
+  /**
+   * Build a focused context for the execution debug loop.
+   * Instead of the FULL history (which gets huge), include only:
+   *   1. System context
+   *   2. Original task
+   *   3. The LATEST code that was executed
+   *   4. The EXACT runtime error
+   *   5. Previous failed attempts summary (if repeating)
+   */
+  function buildExecDebugContext(
+    errorOutput: string,
+    stdout: string,
+    attempt: number,
+    repeatCount: number
+  ): string {
+    let ctx = `${getSystemContext()}\n\nOriginal task: ${task}\n\n`;
+
+    // Include only the latest code (what actually ran)
+    ctx += `--- LATEST CODE (this is what was executed and failed) ---\n${latestCode}\n\n`;
+
+    // The actual error
+    ctx += `--- REAL RUNTIME ERROR (attempt ${attempt}/${MAX_EXECUTION_RETRIES}) ---\n`;
+    ctx += `Error:\n${errorOutput}\n`;
+    if (stdout) {
+      ctx += `\nPartial stdout before crash:\n${stdout}\n`;
+    }
+    ctx += "\n";
+
+    // If same error is repeating, escalate strongly
+    if (repeatCount >= 3) {
+      ctx += `⚠️ CRITICAL ESCALATION: This EXACT same error has occurred ${repeatCount} times in a row. `;
+      ctx += `Every previous "fix" produced the same bug. You MUST:\n`;
+      ctx += `1. COMPLETELY REWRITE the failing section using a FUNDAMENTALLY DIFFERENT approach\n`;
+      ctx += `2. Do NOT just tweak numbers or add try/except — the core logic is wrong\n`;
+      ctx += `3. Simplify the code if needed — a working simple version beats a broken complex one\n`;
+      ctx += `4. If the error is about array shapes/broadcasting, recalculate all dimensions from scratch\n`;
+      ctx += `5. Add print() statements to verify shapes/values at key steps\n\n`;
+    } else if (repeatCount >= 2) {
+      ctx += `⚠️ WARNING: This same error happened ${repeatCount} times. Your previous fix did NOT work. `;
+      ctx += `Try a DIFFERENT approach — do not repeat the same fix.\n\n`;
+    }
+
+    // Summary of all previous error attempts
+    if (previousErrors.length > 0) {
+      ctx += `--- PREVIOUS FAILED ATTEMPTS (${previousErrors.length} total) ---\n`;
+      previousErrors.forEach((e, i) => {
+        ctx += `  Attempt ${i + 1}: ${e}\n`;
+      });
+      ctx += "\n";
+    }
+
+    return ctx;
+  }
 
   while (executionAttempt < MAX_EXECUTION_RETRIES) {
     // Save the latest code
@@ -782,10 +854,7 @@ export async function* runOrchestration(
 
     // Find the main file to run
     const mainFile = findMainFile(savedFiles);
-    if (!mainFile) {
-      // No runnable file, just finish
-      break;
-    }
+    if (!mainFile) break;
 
     // Execute the code
     yield {
@@ -809,8 +878,20 @@ export async function* runOrchestration(
       break;
     }
 
-    // Execution failed — feed real error to Debugger → Developer loop
+    // ── Execution failed — begin auto-debug ──
     executionAttempt++;
+
+    // Track error signature for repeat detection
+    const errorSig = getErrorSignature(result.error || result.output);
+    previousErrors.push(errorSig);
+
+    // Count how many consecutive times this SAME error has occurred
+    let repeatCount = 0;
+    for (let i = previousErrors.length - 1; i >= 0; i--) {
+      if (previousErrors[i] === errorSig) repeatCount++;
+      else break;
+    }
+
     if (executionAttempt >= MAX_EXECUTION_RETRIES) break;
 
     cycle++;
@@ -818,27 +899,28 @@ export async function* runOrchestration(
       type: "evolution_cycle",
       cycle,
       maxCycles: MAX_EVOLUTION_CYCLES + MAX_EXECUTION_RETRIES,
-      content: `Execution failed — auto-debugging (attempt ${executionAttempt}/${MAX_EXECUTION_RETRIES})`,
+      content: `Execution failed — auto-debugging (attempt ${executionAttempt}/${MAX_EXECUTION_RETRIES})${repeatCount >= 2 ? ` [SAME ERROR x${repeatCount} — escalating]` : ""}`,
       timestamp: Date.now(),
     };
 
-    // Add the execution error to history
-    history.push({
-      role: "tester",
-      content: `REAL EXECUTION FAILED with the following error:\n\n${result.error}\n\nStdout (if any):\n${result.output}\n\nVERDICT: TESTS FAILING`,
-    });
+    // Build focused context (not full bloated history)
+    const execContext = buildExecDebugContext(
+      result.error || result.output,
+      result.output,
+      executionAttempt,
+      repeatCount
+    );
 
     // Debugger diagnoses the real error
+    const debugInstruction = repeatCount >= 3
+      ? `CRITICAL: The code has crashed ${repeatCount} times with the SAME error. Previous fixes all failed. You MUST identify WHY the fixes didn't work and propose a COMPLETELY DIFFERENT solution strategy. Do NOT suggest the same fix again.`
+      : repeatCount >= 2
+        ? `WARNING: This is the same error as last time — your previous fix did not work. Analyze why and propose a DIFFERENT fix approach.`
+        : `The code was executed and CRASHED with a real runtime error. Diagnose the exact root cause and provide precise, specific fix instructions.`;
+
     const execDebugMsgs: ChatMessage[] = [
       { role: "system", content: AGENTS.debugger.systemPrompt },
-      {
-        role: "user",
-        content: buildContext(
-          task,
-          history,
-          `CRITICAL: The code was actually executed and CRASHED with a real runtime error (shown above from the Tester). This is NOT a hypothetical test — the code literally failed when run. Diagnose the exact cause of the runtime error and provide precise fix specifications.`
-        ),
-      },
+      { role: "user", content: execContext + `\n--- Instructions ---\n${debugInstruction}` },
     ];
 
     response = "";
@@ -847,19 +929,17 @@ export async function* runOrchestration(
       yield event;
       if (event.type === "agent_complete") response = event.content || "";
     }
-    history.push({ role: "debugger", content: response });
 
-    // Developer applies the fix
+    // Developer applies the fix with focused context
+    const devInstruction = repeatCount >= 3
+      ? `CRITICAL: You have tried to fix this ${repeatCount} times and FAILED every time. The SAME error keeps happening. You MUST:\n1. REWRITE the broken section completely using a different algorithm/approach\n2. Do NOT copy-paste your previous code with minor tweaks\n3. Add shape/value verification print() statements\n4. Simplify if needed — working simple code > broken complex code\n\nThe Debugger's analysis:\n${response}\n\nOutput the COMPLETE corrected code for ALL files.`
+      : repeatCount >= 2
+        ? `Your previous fix did NOT resolve the error. The Debugger found: ${response}\n\nTry a DIFFERENT approach this time. Output the COMPLETE corrected code for ALL files.`
+        : `The code crashed during execution. The Debugger's diagnosis:\n${response}\n\nApply the fix and output the COMPLETE corrected code for ALL files. Make sure ALL imports and API calls are correct.`;
+
     const execFixMsgs: ChatMessage[] = [
       { role: "system", content: AGENTS.developer.systemPrompt },
-      {
-        role: "user",
-        content: buildContext(
-          task,
-          history,
-          `URGENT: The code crashed during real execution. The Debugger has diagnosed the issue above. Apply the fix and output the COMPLETE corrected code. Make sure ALL imports and API calls are correct.`
-        ),
-      },
+      { role: "user", content: execContext + `\n--- Instructions ---\n${devInstruction}` },
     ];
 
     response = "";
@@ -868,7 +948,6 @@ export async function* runOrchestration(
       yield event;
       if (event.type === "agent_complete") response = event.content || "";
     }
-    history.push({ role: "developer", content: response });
     latestCode = response;
   }
 
