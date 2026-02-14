@@ -42,17 +42,10 @@ const LANG_EXTENSIONS: Record<string, string> = {
  */
 function prepareOutputDir(): void {
   if (fs.existsSync(OUTPUT_DIR)) {
-    // Remove old generated files
-    const files = fs.readdirSync(OUTPUT_DIR);
-    for (const file of files) {
-      const filePath = path.join(OUTPUT_DIR, file);
-      if (fs.statSync(filePath).isFile()) {
-        fs.unlinkSync(filePath);
-      }
-    }
-  } else {
-    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    // Remove the entire output directory and recreate it
+    fs.rmSync(OUTPUT_DIR, { recursive: true, force: true });
   }
+  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 }
 
 /**
@@ -78,8 +71,11 @@ function saveCodeBlocks(blocks: CodeBlock[]): string[] {
         : `file_${i + 1}.${ext}`;
     }
 
-    // Clean the filename (remove path separators for safety)
-    const safeName = filename.replace(/[/\\]/g, "_").replace(/[^a-zA-Z0-9._-]/g, "_");
+    // Normalize slashes to OS separator but PRESERVE directory structure
+    const normalizedName = filename.replace(/\\/g, "/");
+
+    // Remove any leading slashes or dots for safety
+    const safeName = normalizedName.replace(/^[./\\]+/, "").replace(/[^a-zA-Z0-9._/\\-]/g, "_");
 
     // Remove the "// filename: ..." comment line from the code before saving
     const cleanCode = block.code.replace(
@@ -87,7 +83,22 @@ function saveCodeBlocks(blocks: CodeBlock[]): string[] {
       ""
     );
 
-    const filePath = path.join(OUTPUT_DIR, safeName);
+    const filePath = path.join(OUTPUT_DIR, ...safeName.split("/"));
+
+    // Create subdirectories if needed
+    const fileDir = path.dirname(filePath);
+    if (!fs.existsSync(fileDir)) {
+      fs.mkdirSync(fileDir, { recursive: true });
+    }
+
+    // If this is a Python package directory, create __init__.py if missing
+    if (ext === "py" && fileDir !== OUTPUT_DIR) {
+      const initFile = path.join(fileDir, "__init__.py");
+      if (!fs.existsSync(initFile)) {
+        fs.writeFileSync(initFile, "", "utf-8");
+      }
+    }
+
     fs.writeFileSync(filePath, cleanCode, "utf-8");
 
     block.savedPath = filePath;
@@ -209,27 +220,36 @@ function executeCode(filename: string): {
 function findMainFile(savedFiles: string[]): string | null {
   const runnableExts = [".py", ".js", ".ts"];
 
-  // Priority 1: file named "main.*"
-  const mainFile = savedFiles.find(
-    (f) => f.match(/^main\.\w+$/) && runnableExts.includes(path.extname(f).toLowerCase())
-  );
-  if (mainFile) return mainFile;
+  // Get just the basename for matching
+  const withBase = savedFiles.map((f) => ({
+    full: f,
+    base: path.basename(f).toLowerCase(),
+  }));
 
-  // Priority 2: file with "main" in the name (e.g. "spiral_main.py")
-  const mainish = savedFiles.find(
-    (f) => f.toLowerCase().includes("main") && runnableExts.includes(path.extname(f).toLowerCase())
+  // Priority 1: file named exactly "main.*"
+  const mainFile = withBase.find(
+    (f) => f.base.match(/^main\.\w+$/) && runnableExts.includes(path.extname(f.base))
   );
-  if (mainish) return mainish;
+  if (mainFile) return mainFile.full;
 
-  // Priority 3: skip files that look like tests, utils, or helpers
-  const skipPatterns = /^(test_|tests_|utils|helpers|lib|config)/i;
-  const appFile = savedFiles.find(
-    (f) => !skipPatterns.test(f) && runnableExts.includes(path.extname(f).toLowerCase())
+  // Priority 2: file with "main" in the basename (e.g. "benchmark_main.py")
+  const mainish = withBase.find(
+    (f) => f.base.includes("main") && runnableExts.includes(path.extname(f.base))
   );
-  if (appFile) return appFile;
+  if (mainish) return mainish.full;
 
-  // Fallback: first runnable file
-  return savedFiles.find((f) => runnableExts.includes(path.extname(f).toLowerCase())) || null;
+  // Priority 3: skip files that look like tests, utils, helpers, or __init__
+  const skipPatterns = /^(test_|tests_|utils|helpers|lib|config|__init__)/i;
+  const appFile = withBase.find(
+    (f) => !skipPatterns.test(f.base) && !f.full.includes("__init__") && runnableExts.includes(path.extname(f.base))
+  );
+  if (appFile) return appFile.full;
+
+  // Fallback: first runnable file that isn't __init__
+  const fallback = withBase.find(
+    (f) => !f.base.startsWith("__init__") && runnableExts.includes(path.extname(f.base))
+  );
+  return fallback?.full || null;
 }
 
 /**
