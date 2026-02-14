@@ -148,7 +148,35 @@ function executeCode(filename: string): {
       maxBuffer: 1024 * 1024, // 1MB
       windowsHide: true,
     });
-    return { success: true, output: output.trim(), error: "" };
+
+    const trimmed = output.trim();
+
+    // Check if the output contains signs of a caught/hidden error
+    const errorPatterns = [
+      /error occurred/i,
+      /traceback \(most recent call last\)/i,
+      /has no attribute/i,
+      /module.*not found/i,
+      /importerror/i,
+      /no module named/i,
+      /permission denied/i,
+      /filenotfounderror/i,
+      /syntaxerror/i,
+      /please ensure/i,
+      /failed to/i,
+    ];
+
+    const hasHiddenError = errorPatterns.some((pat) => pat.test(trimmed));
+
+    if (hasHiddenError) {
+      return {
+        success: false,
+        output: trimmed,
+        error: `Code ran but produced error output:\n${trimmed}`,
+      };
+    }
+
+    return { success: true, output: trimmed, error: "" };
   } catch (err: unknown) {
     const execErr = err as { stderr?: string; stdout?: string; message?: string; status?: number };
     const stderr = execErr.stderr || "";
