@@ -48,6 +48,8 @@ function getSystemContext(): string {
       info.push("- CuPy is installed.");
       info.push("- CRITICAL CuPy API: cupy.cuda.runtime.getDeviceProperties(0) returns a DICT, not an object. Access fields as p['name'].decode() and p['totalGlobalMem'], NOT p.name or p.total_memory. This is the #1 most common CuPy bug.");
       info.push("- Do NOT use cupy.cuda.get_device_properties (does not exist). Do NOT use cupy.cuda.Device().attributes (unreliable).");
+      info.push("- CRITICAL CuPy TIMING: CuPy operations are ASYNCHRONOUS. You MUST call cp.cuda.Stream.null.synchronize() BEFORE stopping the timer, otherwise you only measure kernel launch time (microseconds) instead of actual computation time. Always do: start=time.time(); [gpu_ops]; cp.cuda.Stream.null.synchronize(); gpu_time=time.time()-start");
+      info.push("- CRITICAL CuPy VECTORIZATION: ALL GPU operations must be FULLY VECTORIZED using CuPy array operations. NEVER use Python for-loops over data on GPU. For Monte Carlo: generate ALL random paths in one cp.random call, compute ALL payoffs with array operations. If GPU is slower than CPU, the code has a vectorization bug.");
     }
   } catch {
     // Try nvidia-smi as fallback
@@ -339,17 +341,44 @@ function validateOutputQuality(output: string): string | null {
   }
 
   // 4. Check for GPU vs CPU speedup if this is a benchmark
+  // Check ALL speedup values in the output (not just the first one)
   if (lower.includes("speedup") || (lower.includes("gpu time") && lower.includes("cpu time"))) {
-    const speedupMatch = output.match(/speedup[:\s]*([0-9.]+)x/i);
-    if (speedupMatch) {
-      const speedup = parseFloat(speedupMatch[1]);
+    const speedupRegex = /speedup[:\s|]*([0-9.]+)\s*x?/gi;
+    const slowTasks: string[] = [];
+    let sm;
+    while ((sm = speedupRegex.exec(output)) !== null) {
+      const speedup = parseFloat(sm[1]);
       if (speedup < 1.0) {
-        issues.push(
-          `GPU is SLOWER than CPU (${speedup}x). For a benchmark to demonstrate GPU acceleration, ` +
-          `the dataset and network must be large enough. Use at least 10,000+ data points and larger hidden layers (512+ neurons). ` +
-          `Small workloads have too much GPU transfer overhead to show speedup.`
-        );
+        // Try to find the task name near this match (look backwards in the output)
+        const before = output.slice(Math.max(0, sm.index - 200), sm.index);
+        const taskMatch = before.match(/===\s*(.+?)\s*===/g);
+        const taskName = taskMatch ? taskMatch[taskMatch.length - 1].replace(/===/g, "").trim() : "a task";
+        slowTasks.push(`${taskName} (${speedup}x)`);
       }
+    }
+
+    // Also check the summary table format: | Task | GPU Time | CPU Time | Speedup |
+    const tableRowRegex = /\|\s*([^|]+?)\s*\|\s*([0-9.]+)\s*\|\s*([0-9.]+)\s*\|\s*([0-9.]+)\s*\|/g;
+    let tr;
+    while ((tr = tableRowRegex.exec(output)) !== null) {
+      const taskName = tr[1].trim();
+      const gpuTime = parseFloat(tr[2]);
+      const cpuTime = parseFloat(tr[3]);
+      const speedup = parseFloat(tr[4]);
+      if (speedup < 1.0 || (gpuTime > cpuTime && !isNaN(gpuTime) && !isNaN(cpuTime))) {
+        if (!slowTasks.some((s) => s.includes(taskName))) {
+          slowTasks.push(`${taskName} (${speedup}x)`);
+        }
+      }
+    }
+
+    if (slowTasks.length > 0) {
+      issues.push(
+        `GPU is SLOWER than CPU for: ${slowTasks.join(", ")}. ` +
+        `This means the GPU code is NOT properly vectorized. ALL operations must use CuPy array operations — ` +
+        `NEVER use Python for-loops over data. For Monte Carlo: generate all random paths in ONE cp.random call. ` +
+        `Also ensure cp.cuda.Stream.null.synchronize() is called before timing to measure actual GPU computation.`
+      );
     }
   }
 
