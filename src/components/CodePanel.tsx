@@ -94,8 +94,13 @@ function SavedFilesBanner({
 }) {
   const [copied, setCopied] = useState(false);
 
-  // Determine how to run the first file
-  const mainFile = savedFiles[0];
+  // Determine the main runnable file
+  const skipPatterns = /^(test_|tests_|utils|helpers|lib|config)/i;
+  const mainFile =
+    savedFiles.find((f) => /^main\.\w+$/.test(f)) ||
+    savedFiles.find((f) => f.toLowerCase().includes("main")) ||
+    savedFiles.find((f) => !skipPatterns.test(f) && /\.(py|js|ts)$/.test(f)) ||
+    savedFiles[0];
   const ext = mainFile?.split(".").pop()?.toLowerCase();
   let runCommand = "";
   if (ext === "py") runCommand = `python output/${mainFile}`;

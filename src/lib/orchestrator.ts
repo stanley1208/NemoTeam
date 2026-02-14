@@ -98,29 +98,19 @@ function saveCodeBlocks(blocks: CodeBlock[]): string[] {
 }
 
 /**
- * Determine the run command for a saved file.
+ * Build the environment variables for execution (includes CUDA DLL paths).
  */
-function getRunCommand(filename: string): string | null {
-  const ext = path.extname(filename).toLowerCase();
-  const filePath = path.join(OUTPUT_DIR, filename);
-
-  // Set up environment with CUDA DLL paths for CuPy
+function getExecEnv(): Record<string, string> {
   const cudaPaths = [
-    path.join(process.cwd(), "node_modules"),
     "C:\\Users\\user\\anaconda3\\Lib\\site-packages\\torch\\lib",
     "C:\\Users\\user\\anaconda3\\Lib\\site-packages\\nvidia\\cuda_nvrtc\\bin",
   ].join(path.delimiter);
 
-  switch (ext) {
-    case ".py":
-      return `set "PATH=${cudaPaths};%PATH%" && python "${filePath}"`;
-    case ".js":
-      return `node "${filePath}"`;
-    case ".ts":
-      return `npx tsx "${filePath}"`;
-    default:
-      return null;
-  }
+  return {
+    ...process.env as Record<string, string>,
+    PATH: `${cudaPaths}${path.delimiter}${process.env.PATH || ""}`,
+    PYTHONPATH: OUTPUT_DIR,
+  };
 }
 
 /**
@@ -131,26 +121,36 @@ function executeCode(filename: string): {
   output: string;
   error: string;
 } {
-  const cmd = getRunCommand(filename);
-  if (!cmd) {
-    return {
-      success: false,
-      output: "",
-      error: `No known runner for file: ${filename}`,
-    };
+  const ext = path.extname(filename).toLowerCase();
+  const filePath = path.join(OUTPUT_DIR, filename);
+  let cmd: string;
+
+  switch (ext) {
+    case ".py":
+      cmd = `python "${filePath}"`;
+      break;
+    case ".js":
+      cmd = `node "${filePath}"`;
+      break;
+    case ".ts":
+      cmd = `npx tsx "${filePath}"`;
+      break;
+    default:
+      return { success: false, output: "", error: `No known runner for ${ext} files` };
   }
 
   try {
     const output = execSync(cmd, {
       timeout: EXECUTION_TIMEOUT_MS,
       encoding: "utf-8",
-      shell: "cmd.exe",
-      cwd: process.cwd(),
+      cwd: OUTPUT_DIR,
+      env: getExecEnv(),
       maxBuffer: 1024 * 1024, // 1MB
+      windowsHide: true,
     });
     return { success: true, output: output.trim(), error: "" };
   } catch (err: unknown) {
-    const execErr = err as { stderr?: string; stdout?: string; message?: string };
+    const execErr = err as { stderr?: string; stdout?: string; message?: string; status?: number };
     const stderr = execErr.stderr || "";
     const stdout = execErr.stdout || "";
     const msg = execErr.message || "Unknown execution error";
@@ -158,12 +158,12 @@ function executeCode(filename: string): {
     // Extract just the meaningful error (last part of traceback)
     let cleanError = stderr || msg;
     const lines = cleanError.split("\n");
-    if (lines.length > 15) {
-      // Keep first 3 lines + last 10 lines for traceback
+    if (lines.length > 20) {
+      // Keep first 3 lines + last 12 lines for traceback
       cleanError = [
         ...lines.slice(0, 3),
         "  ...",
-        ...lines.slice(-10),
+        ...lines.slice(-12),
       ].join("\n");
     }
 
@@ -179,12 +179,28 @@ function executeCode(filename: string): {
  * Find the main runnable file from saved files.
  */
 function findMainFile(savedFiles: string[]): string | null {
-  // Prefer main.py, main.js, etc.
-  const mainFile = savedFiles.find((f) => f.startsWith("main."));
+  const runnableExts = [".py", ".js", ".ts"];
+
+  // Priority 1: file named "main.*"
+  const mainFile = savedFiles.find(
+    (f) => f.match(/^main\.\w+$/) && runnableExts.includes(path.extname(f).toLowerCase())
+  );
   if (mainFile) return mainFile;
 
-  // Otherwise pick the first runnable file
-  const runnableExts = [".py", ".js", ".ts"];
+  // Priority 2: file with "main" in the name (e.g. "spiral_main.py")
+  const mainish = savedFiles.find(
+    (f) => f.toLowerCase().includes("main") && runnableExts.includes(path.extname(f).toLowerCase())
+  );
+  if (mainish) return mainish;
+
+  // Priority 3: skip files that look like tests, utils, or helpers
+  const skipPatterns = /^(test_|tests_|utils|helpers|lib|config)/i;
+  const appFile = savedFiles.find(
+    (f) => !skipPatterns.test(f) && runnableExts.includes(path.extname(f).toLowerCase())
+  );
+  if (appFile) return appFile;
+
+  // Fallback: first runnable file
   return savedFiles.find((f) => runnableExts.includes(path.extname(f).toLowerCase())) || null;
 }
 
