@@ -986,16 +986,21 @@ export async function* runOrchestration(
       executionAttempt,
     );
 
-    // ── Debugger diagnoses the real error ──
+    // ── Debugger: diagnose crash + full code audit ──
+    // The Debugger always does TWO things:
+    //   A) Fix the specific crash
+    //   B) Audit the ENTIRE code for all other potential bugs
+    const multiFixNote = `\n\nIMPORTANT: After diagnosing the crash, you MUST also audit the ENTIRE code for ALL other potential bugs — wrong shapes, bad API calls, missing imports, logic errors, edge cases, type mismatches, etc. Fix EVERYTHING in this one round so we don't keep hitting new errors one at a time.`;
+
     let debugInstruction: string;
     if (consecutiveRepeats >= 3) {
-      debugInstruction = `CRITICAL: The code has crashed ${consecutiveRepeats} times with the SAME error. Previous fixes all failed. You MUST identify WHY the fixes didn't work and propose a COMPLETELY DIFFERENT solution strategy. Do NOT suggest the same fix again.`;
+      debugInstruction = `CRITICAL: The code has crashed ${consecutiveRepeats} times with the SAME error. Previous fixes all failed. You MUST identify WHY the fixes didn't work and propose a COMPLETELY DIFFERENT solution strategy. Do NOT suggest the same fix again.${multiFixNote}`;
     } else if (consecutiveRepeats >= 2) {
-      debugInstruction = `WARNING: This is the same error as last time — your previous fix did not work. Analyze WHY it didn't work and propose a DIFFERENT fix approach.`;
+      debugInstruction = `WARNING: This is the same error as last time — your previous fix did not work. Analyze WHY it didn't work and propose a DIFFERENT fix approach.${multiFixNote}`;
     } else if (totalUniqueCount > 1) {
-      debugInstruction = `The code crashed with a NEW error (different from previous attempts). This means the previous fix resolved the old bug but introduced a new one. Diagnose the NEW error, but also check that your fix does NOT reintroduce any of the ${totalUniqueCount - 1} previously fixed errors (listed above in the error history).`;
+      debugInstruction = `The code crashed with a NEW error (different from previous attempts). The previous fix resolved the old bug but introduced a new one. Diagnose the NEW error, and also check that your fix does NOT reintroduce any of the ${totalUniqueCount - 1} previously fixed errors (listed in error history).${multiFixNote}`;
     } else {
-      debugInstruction = `The code was executed and CRASHED with a real runtime error. Diagnose the exact root cause and provide precise, specific fix instructions.`;
+      debugInstruction = `The code was executed and CRASHED with a real runtime error. Diagnose the exact root cause.${multiFixNote}`;
     }
 
     const execDebugMsgs: ChatMessage[] = [
@@ -1010,16 +1015,18 @@ export async function* runOrchestration(
       if (event.type === "agent_complete") response = event.content || "";
     }
 
-    // ── Developer applies the fix ──
+    // ── Developer: apply ALL fixes at once ──
+    const allFixNote = `\n\nCRITICAL: Apply ALL fixes identified by the Debugger — not just the crash, but every bug found during the full code audit. The goal is to fix EVERY issue in one pass so the code runs clean on the next execution.`;
+
     let devInstruction: string;
     if (consecutiveRepeats >= 3) {
-      devInstruction = `CRITICAL: You have tried to fix this ${consecutiveRepeats} times and FAILED every time. The SAME error keeps happening. You MUST:\n1. REWRITE the broken section completely using a FUNDAMENTALLY different algorithm/approach\n2. Do NOT copy-paste your previous code with minor tweaks\n3. Add shape/value verification print() statements\n4. Simplify if needed — working simple code > broken complex code\n\nThe Debugger's analysis:\n${response}\n\nOutput the COMPLETE corrected code for ALL files.`;
+      devInstruction = `CRITICAL: You have tried to fix this ${consecutiveRepeats} times and FAILED. The SAME error keeps happening. You MUST:\n1. REWRITE the broken section completely using a FUNDAMENTALLY different algorithm\n2. Do NOT copy-paste your previous code with minor tweaks\n3. Add print() statements to verify values at key steps\n4. Simplify if needed — working simple code > broken complex code\n\nThe Debugger found these issues:\n${response}${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files.`;
     } else if (consecutiveRepeats >= 2) {
-      devInstruction = `Your previous fix did NOT resolve the error. The Debugger found:\n${response}\n\nTry a DIFFERENT approach this time. Output the COMPLETE corrected code for ALL files.`;
+      devInstruction = `Your previous fix did NOT resolve the error. The Debugger found:\n${response}\n\nTry a DIFFERENT approach this time.${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files.`;
     } else if (totalUniqueCount > 1) {
-      devInstruction = `The previous fix resolved the old bug but introduced a NEW error. The Debugger's analysis:\n${response}\n\nFix the new error, but MAKE SURE you do NOT reintroduce any of the ${totalUniqueCount - 1} previously fixed bugs (see error history above). Output the COMPLETE corrected code for ALL files.`;
+      devInstruction = `The previous fix resolved the old bug but introduced a NEW error. The Debugger's full analysis:\n${response}\n\nFix ALL issues found, and MAKE SURE you do NOT reintroduce any of the ${totalUniqueCount - 1} previously fixed bugs.${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files.`;
     } else {
-      devInstruction = `The code crashed during execution. The Debugger's diagnosis:\n${response}\n\nApply the fix and output the COMPLETE corrected code for ALL files. Make sure ALL imports and API calls are correct.`;
+      devInstruction = `The code crashed during execution. The Debugger's full analysis:\n${response}${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files. Make sure ALL imports and API calls are correct.`;
     }
 
     const execFixMsgs: ChatMessage[] = [
