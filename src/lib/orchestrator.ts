@@ -762,7 +762,10 @@ export async function* runOrchestration(
 
   let executionSuccess = false;
   let executionAttempt = 0;
-  const previousErrors: string[] = []; // Track error signatures to detect repeats
+
+  // ── Error tracking ──
+  // Each entry: { signature, fullError, attempt }
+  const errorLog: { sig: string; full: string; attempt: number }[] = [];
 
   /**
    * Extract a short "signature" from an error so we can detect repeats.
@@ -770,64 +773,130 @@ export async function* runOrchestration(
    */
   function getErrorSignature(error: string): string {
     const lines = error.split("\n").map((l) => l.trim()).filter(Boolean);
-    // Find the last line that looks like an actual error (ErrorType: message)
     for (let i = lines.length - 1; i >= 0; i--) {
       if (/Error:|Exception:|FAILED|error occurred/i.test(lines[i])) {
-        return lines[i].slice(0, 150); // cap length
+        return lines[i].slice(0, 200);
       }
     }
-    return lines.slice(-1)[0]?.slice(0, 150) || "unknown error";
+    return lines.slice(-1)[0]?.slice(0, 200) || "unknown error";
   }
 
   /**
-   * Build a focused context for the execution debug loop.
-   * Instead of the FULL history (which gets huge), include only:
-   *   1. System context
+   * Count consecutive occurrences of the same error at the end of errorLog.
+   */
+  function getConsecutiveRepeatCount(sig: string): number {
+    let count = 0;
+    for (let i = errorLog.length - 1; i >= 0; i--) {
+      if (errorLog[i].sig === sig) count++;
+      else break;
+    }
+    return count;
+  }
+
+  /**
+   * Get all unique errors seen so far (deduped by signature).
+   */
+  function getUniqueErrors(): { sig: string; full: string; count: number }[] {
+    const map = new Map<string, { sig: string; full: string; count: number }>();
+    for (const e of errorLog) {
+      const existing = map.get(e.sig);
+      if (existing) {
+        existing.count++;
+      } else {
+        map.set(e.sig, { sig: e.sig, full: e.full, count: 1 });
+      }
+    }
+    return Array.from(map.values());
+  }
+
+  // ── Capture key design context from Phase 1/2 ──
+  // Preserve the Architect plan and latest Reviewer insights so Phase 3
+  // agents still understand the intended design without the full verbose history.
+  const architectPlan = history.find((h) => h.role === "architect")?.content || "";
+  const lastReview = [...history].reverse().find((h) => h.role === "reviewer")?.content || "";
+
+  /**
+   * Build a focused BUT complete context for the execution debug loop.
+   *
+   * Includes:
+   *   1. System context (dynamic environment)
    *   2. Original task
-   *   3. The LATEST code that was executed
-   *   4. The EXACT runtime error
-   *   5. Previous failed attempts summary (if repeating)
+   *   3. Architect's design plan (condensed) — preserves structural intent
+   *   4. Last Reviewer feedback — preserves quality insights
+   *   5. The LATEST code that was executed
+   *   6. The EXACT current runtime error
+   *   7. FULL error history — all previous errors (same AND different)
+   *   8. Escalation instructions based on error patterns
    */
   function buildExecDebugContext(
     errorOutput: string,
     stdout: string,
     attempt: number,
-    repeatCount: number
   ): string {
     let ctx = `${getSystemContext()}\n\nOriginal task: ${task}\n\n`;
 
-    // Include only the latest code (what actually ran)
+    // ── Design context from Phase 1/2 (keeps agents grounded) ──
+    if (architectPlan) {
+      ctx += `--- ARCHITECT'S DESIGN PLAN (follow this structure) ---\n${architectPlan}\n\n`;
+    }
+    if (lastReview) {
+      ctx += `--- LAST REVIEWER FEEDBACK (keep these fixes) ---\n${lastReview}\n\n`;
+    }
+
+    // ── The latest code that was actually executed ──
     ctx += `--- LATEST CODE (this is what was executed and failed) ---\n${latestCode}\n\n`;
 
-    // The actual error
-    ctx += `--- REAL RUNTIME ERROR (attempt ${attempt}/${MAX_EXECUTION_RETRIES}) ---\n`;
+    // ── Current error ──
+    ctx += `--- CURRENT RUNTIME ERROR (attempt ${attempt}/${MAX_EXECUTION_RETRIES}) ---\n`;
     ctx += `Error:\n${errorOutput}\n`;
-    if (stdout) {
+    if (stdout && stdout !== errorOutput) {
       ctx += `\nPartial stdout before crash:\n${stdout}\n`;
     }
     ctx += "\n";
 
-    // If same error is repeating, escalate strongly
-    if (repeatCount >= 3) {
-      ctx += `⚠️ CRITICAL ESCALATION: This EXACT same error has occurred ${repeatCount} times in a row. `;
-      ctx += `Every previous "fix" produced the same bug. You MUST:\n`;
-      ctx += `1. COMPLETELY REWRITE the failing section using a FUNDAMENTALLY DIFFERENT approach\n`;
-      ctx += `2. Do NOT just tweak numbers or add try/except — the core logic is wrong\n`;
-      ctx += `3. Simplify the code if needed — a working simple version beats a broken complex one\n`;
-      ctx += `4. If the error is about array shapes/broadcasting, recalculate all dimensions from scratch\n`;
-      ctx += `5. Add print() statements to verify shapes/values at key steps\n\n`;
-    } else if (repeatCount >= 2) {
-      ctx += `⚠️ WARNING: This same error happened ${repeatCount} times. Your previous fix did NOT work. `;
-      ctx += `Try a DIFFERENT approach — do not repeat the same fix.\n\n`;
-    }
-
-    // Summary of all previous error attempts
-    if (previousErrors.length > 0) {
-      ctx += `--- PREVIOUS FAILED ATTEMPTS (${previousErrors.length} total) ---\n`;
-      previousErrors.forEach((e, i) => {
-        ctx += `  Attempt ${i + 1}: ${e}\n`;
+    // ── Full error history (ALL errors, same or different) ──
+    const uniqueErrors = getUniqueErrors();
+    if (errorLog.length > 0) {
+      ctx += `--- ERROR HISTORY (${errorLog.length} total failures, ${uniqueErrors.length} unique errors) ---\n`;
+      errorLog.forEach((e, i) => {
+        ctx += `  Attempt ${i + 1}: ${e.sig}\n`;
       });
       ctx += "\n";
+
+      // Show unique error summary with counts
+      if (uniqueErrors.length > 1) {
+        ctx += `--- UNIQUE ERRORS ENCOUNTERED ---\n`;
+        uniqueErrors.forEach((e) => {
+          ctx += `  [${e.count}x] ${e.sig}\n`;
+        });
+        ctx += "\n";
+        ctx += `⚠️ MULTIPLE DIFFERENT ERRORS: You have caused ${uniqueErrors.length} different types of errors across ${errorLog.length} attempts. `;
+        ctx += `When fixing the current error, make sure you do NOT reintroduce any of the previously fixed errors listed above.\n\n`;
+      }
+    }
+
+    // ── Escalation based on current error pattern ──
+    const currentSig = getErrorSignature(errorOutput);
+    const consecutiveRepeats = getConsecutiveRepeatCount(currentSig);
+
+    if (consecutiveRepeats >= 3) {
+      ctx += `🚨 CRITICAL ESCALATION: This EXACT same error has occurred ${consecutiveRepeats} times IN A ROW. `;
+      ctx += `Every previous "fix" produced the same bug. You MUST:\n`;
+      ctx += `1. COMPLETELY REWRITE the failing function/section using a FUNDAMENTALLY DIFFERENT algorithm\n`;
+      ctx += `2. Do NOT just tweak numbers or add try/except — the core logic is wrong\n`;
+      ctx += `3. Simplify the code if needed — a working simple version beats a broken complex one\n`;
+      ctx += `4. If the error is about array shapes/broadcasting, recalculate ALL dimensions from scratch\n`;
+      ctx += `5. Add print() statements BEFORE the failing line to verify shapes/values\n`;
+      ctx += `6. Consider removing the problematic feature entirely and using a simpler alternative\n\n`;
+    } else if (consecutiveRepeats >= 2) {
+      ctx += `⚠️ WARNING: This same error happened ${consecutiveRepeats} times consecutively. `;
+      ctx += `Your previous fix did NOT work. Try a DIFFERENT approach entirely.\n\n`;
+    }
+
+    if (errorLog.length >= 5) {
+      ctx += `⚠️ PERSISTENCE ALERT: ${errorLog.length} failed attempts so far. `;
+      ctx += `Focus on getting the code to RUN correctly, even if it means simplifying. `;
+      ctx += `A working simple solution is better than a broken complex one.\n\n`;
     }
 
     return ctx;
@@ -881,42 +950,53 @@ export async function* runOrchestration(
     // ── Execution failed — begin auto-debug ──
     executionAttempt++;
 
-    // Track error signature for repeat detection
-    const errorSig = getErrorSignature(result.error || result.output);
-    previousErrors.push(errorSig);
+    // Track this error (both signature and full text)
+    const rawError = result.error || result.output;
+    const errorSig = getErrorSignature(rawError);
+    errorLog.push({ sig: errorSig, full: rawError, attempt: executionAttempt });
 
-    // Count how many consecutive times this SAME error has occurred
-    let repeatCount = 0;
-    for (let i = previousErrors.length - 1; i >= 0; i--) {
-      if (previousErrors[i] === errorSig) repeatCount++;
-      else break;
-    }
+    // Analyze error patterns
+    const consecutiveRepeats = getConsecutiveRepeatCount(errorSig);
+    const uniqueErrors = getUniqueErrors();
+    const totalUniqueCount = uniqueErrors.length;
 
     if (executionAttempt >= MAX_EXECUTION_RETRIES) break;
+
+    // Build status label for the UI
+    let statusLabel = `Execution failed — auto-debugging (attempt ${executionAttempt}/${MAX_EXECUTION_RETRIES})`;
+    if (consecutiveRepeats >= 2) {
+      statusLabel += ` [SAME ERROR x${consecutiveRepeats} — escalating]`;
+    } else if (totalUniqueCount > 1) {
+      statusLabel += ` [${totalUniqueCount} different errors seen — tracking all]`;
+    }
 
     cycle++;
     yield {
       type: "evolution_cycle",
       cycle,
       maxCycles: MAX_EVOLUTION_CYCLES + MAX_EXECUTION_RETRIES,
-      content: `Execution failed — auto-debugging (attempt ${executionAttempt}/${MAX_EXECUTION_RETRIES})${repeatCount >= 2 ? ` [SAME ERROR x${repeatCount} — escalating]` : ""}`,
+      content: statusLabel,
       timestamp: Date.now(),
     };
 
-    // Build focused context (not full bloated history)
+    // Build focused context with full error history + design context
     const execContext = buildExecDebugContext(
-      result.error || result.output,
+      rawError,
       result.output,
       executionAttempt,
-      repeatCount
     );
 
-    // Debugger diagnoses the real error
-    const debugInstruction = repeatCount >= 3
-      ? `CRITICAL: The code has crashed ${repeatCount} times with the SAME error. Previous fixes all failed. You MUST identify WHY the fixes didn't work and propose a COMPLETELY DIFFERENT solution strategy. Do NOT suggest the same fix again.`
-      : repeatCount >= 2
-        ? `WARNING: This is the same error as last time — your previous fix did not work. Analyze why and propose a DIFFERENT fix approach.`
-        : `The code was executed and CRASHED with a real runtime error. Diagnose the exact root cause and provide precise, specific fix instructions.`;
+    // ── Debugger diagnoses the real error ──
+    let debugInstruction: string;
+    if (consecutiveRepeats >= 3) {
+      debugInstruction = `CRITICAL: The code has crashed ${consecutiveRepeats} times with the SAME error. Previous fixes all failed. You MUST identify WHY the fixes didn't work and propose a COMPLETELY DIFFERENT solution strategy. Do NOT suggest the same fix again.`;
+    } else if (consecutiveRepeats >= 2) {
+      debugInstruction = `WARNING: This is the same error as last time — your previous fix did not work. Analyze WHY it didn't work and propose a DIFFERENT fix approach.`;
+    } else if (totalUniqueCount > 1) {
+      debugInstruction = `The code crashed with a NEW error (different from previous attempts). This means the previous fix resolved the old bug but introduced a new one. Diagnose the NEW error, but also check that your fix does NOT reintroduce any of the ${totalUniqueCount - 1} previously fixed errors (listed above in the error history).`;
+    } else {
+      debugInstruction = `The code was executed and CRASHED with a real runtime error. Diagnose the exact root cause and provide precise, specific fix instructions.`;
+    }
 
     const execDebugMsgs: ChatMessage[] = [
       { role: "system", content: AGENTS.debugger.systemPrompt },
@@ -930,12 +1010,17 @@ export async function* runOrchestration(
       if (event.type === "agent_complete") response = event.content || "";
     }
 
-    // Developer applies the fix with focused context
-    const devInstruction = repeatCount >= 3
-      ? `CRITICAL: You have tried to fix this ${repeatCount} times and FAILED every time. The SAME error keeps happening. You MUST:\n1. REWRITE the broken section completely using a different algorithm/approach\n2. Do NOT copy-paste your previous code with minor tweaks\n3. Add shape/value verification print() statements\n4. Simplify if needed — working simple code > broken complex code\n\nThe Debugger's analysis:\n${response}\n\nOutput the COMPLETE corrected code for ALL files.`
-      : repeatCount >= 2
-        ? `Your previous fix did NOT resolve the error. The Debugger found: ${response}\n\nTry a DIFFERENT approach this time. Output the COMPLETE corrected code for ALL files.`
-        : `The code crashed during execution. The Debugger's diagnosis:\n${response}\n\nApply the fix and output the COMPLETE corrected code for ALL files. Make sure ALL imports and API calls are correct.`;
+    // ── Developer applies the fix ──
+    let devInstruction: string;
+    if (consecutiveRepeats >= 3) {
+      devInstruction = `CRITICAL: You have tried to fix this ${consecutiveRepeats} times and FAILED every time. The SAME error keeps happening. You MUST:\n1. REWRITE the broken section completely using a FUNDAMENTALLY different algorithm/approach\n2. Do NOT copy-paste your previous code with minor tweaks\n3. Add shape/value verification print() statements\n4. Simplify if needed — working simple code > broken complex code\n\nThe Debugger's analysis:\n${response}\n\nOutput the COMPLETE corrected code for ALL files.`;
+    } else if (consecutiveRepeats >= 2) {
+      devInstruction = `Your previous fix did NOT resolve the error. The Debugger found:\n${response}\n\nTry a DIFFERENT approach this time. Output the COMPLETE corrected code for ALL files.`;
+    } else if (totalUniqueCount > 1) {
+      devInstruction = `The previous fix resolved the old bug but introduced a NEW error. The Debugger's analysis:\n${response}\n\nFix the new error, but MAKE SURE you do NOT reintroduce any of the ${totalUniqueCount - 1} previously fixed bugs (see error history above). Output the COMPLETE corrected code for ALL files.`;
+    } else {
+      devInstruction = `The code crashed during execution. The Debugger's diagnosis:\n${response}\n\nApply the fix and output the COMPLETE corrected code for ALL files. Make sure ALL imports and API calls are correct.`;
+    }
 
     const execFixMsgs: ChatMessage[] = [
       { role: "system", content: AGENTS.developer.systemPrompt },
