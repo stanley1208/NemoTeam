@@ -12,6 +12,7 @@ import {
   GitBranch,
   ArrowRight,
   Sparkles,
+  RefreshCw,
 } from "lucide-react";
 
 export default function Home() {
@@ -61,7 +62,7 @@ export default function Home() {
             </p>
 
             {/* Agent Roster */}
-            <div className="flex justify-center gap-3 sm:gap-4 mt-10 mb-12">
+            <div className="flex justify-center flex-wrap gap-3 sm:gap-4 mt-10 mb-12">
               {AGENT_ORDER.map((role, index) => {
                 const agent = AGENTS[role];
                 return (
@@ -103,7 +104,7 @@ export default function Home() {
               pipeline, just like a real development team.
             </p>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
               {AGENT_ORDER.map((role, index) => {
                 const agent = AGENTS[role];
                 return (
@@ -133,7 +134,7 @@ export default function Home() {
         {/* Tech Section */}
         <section className="border-t border-white/5">
           <div className="mx-auto max-w-screen-xl px-4 sm:px-6 py-16 sm:py-20">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
               <div className="rounded-2xl border border-white/5 bg-surface-raised p-6">
                 <Zap className="h-8 w-8 text-nvidia mb-4" />
                 <h3 className="text-base font-semibold text-white mb-2">
@@ -150,19 +151,28 @@ export default function Home() {
                   Built-In Code Review
                 </h3>
                 <p className="text-sm text-zinc-500 leading-relaxed">
-                  The Reviewer agent catches bugs, security issues, and quality
-                  problems — triggering automatic revisions before delivery.
+                  The Reviewer catches bugs, security issues, and quality
+                  problems — triggering automatic revisions.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-white/5 bg-surface-raised p-6">
+                <RefreshCw className="h-8 w-8 text-red-400 mb-4" />
+                <h3 className="text-base font-semibold text-white mb-2">
+                  Self-Evolving Debug Loop
+                </h3>
+                <p className="text-sm text-zinc-500 leading-relaxed">
+                  Inspired by OpenEvolve: if tests fail, the Debugger
+                  diagnoses and the team re-iterates until all tests pass.
                 </p>
               </div>
               <div className="rounded-2xl border border-white/5 bg-surface-raised p-6">
                 <GitBranch className="h-8 w-8 text-purple-400 mb-4" />
                 <h3 className="text-base font-semibold text-white mb-2">
-                  Iterative Refinement
+                  Up to 3 Evolution Cycles
                 </h3>
                 <p className="text-sm text-zinc-500 leading-relaxed">
-                  If code doesn&apos;t pass review, the Developer revises
-                  automatically. You get production-ready code, not a first
-                  draft.
+                  The team evolves through Debugger → Developer → Reviewer
+                  → Tester cycles until the code is clean or max cycles hit.
                 </p>
               </div>
             </div>

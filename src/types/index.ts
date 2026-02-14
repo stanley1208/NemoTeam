@@ -1,4 +1,4 @@
-export type AgentRole = "architect" | "developer" | "reviewer" | "tester";
+export type AgentRole = "architect" | "developer" | "reviewer" | "tester" | "debugger";
 
 export interface AgentDefinition {
   role: AgentRole;
@@ -18,6 +18,7 @@ export interface AgentMessage {
   content: string;
   timestamp: number;
   isStreaming?: boolean;
+  evolutionCycle?: number;
 }
 
 export interface CodeBlock {
@@ -37,6 +38,7 @@ export type SSEEventType =
   | "agent_chunk"
   | "agent_complete"
   | "code_update"
+  | "evolution_cycle"
   | "workflow_complete"
   | "workflow_error";
 
@@ -46,6 +48,8 @@ export interface SSEEvent {
   content?: string;
   code?: CodeBlock;
   error?: string;
+  cycle?: number;
+  maxCycles?: number;
   timestamp: number;
 }
 
@@ -55,4 +59,6 @@ export interface WorkflowState {
   codeBlocks: CodeBlock[];
   activeAgent: AgentRole | null;
   task: string;
+  evolutionCycle: number;
+  maxEvolutionCycles: number;
 }

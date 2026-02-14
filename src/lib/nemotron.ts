@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 
-const MODEL = "nvidia/llama-3.1-nemotron-70b-instruct";
+const MODEL = "mistralai/mistral-nemotron";
 
 let client: OpenAI | null = null;
 
@@ -39,7 +39,7 @@ export async function* streamNemotronChat(
     messages,
     stream: true,
     temperature: 0.6,
-    top_p: 0.95,
+    top_p: 0.7,
     max_tokens: 4096,
   });
 
@@ -63,7 +63,7 @@ export async function chatNemotron(
     model: MODEL,
     messages,
     temperature: 0.6,
-    top_p: 0.95,
+    top_p: 0.7,
     max_tokens: 4096,
   });
 

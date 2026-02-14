@@ -16,14 +16,23 @@ NemoTeam is an open-source multi-agent AI development tool where **four speciali
 | **Axel** (Developer) | Senior Developer | Writes clean, production-ready code based on the Architect's plan |
 | **Sage** (Reviewer) | Code Reviewer | Audits code for bugs, security vulnerabilities, and quality issues |
 | **Vera** (Tester) | QA Engineer | Writes comprehensive tests and validates correctness |
+| **Dash** (Debugger) | Debug Engineer | Diagnoses test failures, traces root causes, and specifies precise fixes |
 
-### The Pipeline
+### The Pipeline (OpenEvolve-inspired)
 
+**Phase 1 — Initial Build:**
 ```
-User Task → Architect → Developer → Reviewer → (Revision if needed) → Tester → Final Code
+User Task → Architect → Developer → Reviewer → (Revision if needed) → Tester
 ```
 
-If the Reviewer finds issues, the Developer **automatically revises** the code before it reaches testing. You get production-quality code, not a first draft.
+**Phase 2 — Evolution Loop (if tests fail):**
+```
+Tester FAILS → Debugger diagnoses → Developer fixes → Reviewer re-checks → Tester re-tests
+                                    ↑                                        ↓
+                                    └──────── repeat until PASS ─────────────┘
+```
+
+Inspired by [OpenEvolve](https://github.com/codelion/openevolve), the system doesn't stop at the first draft. If the Tester finds failures, the **Debugger** agent performs root cause analysis, then the team re-iterates through the fix-review-test cycle — up to 3 evolution cycles — until all tests pass. This is **vibe debugging**: the AI team keeps debugging itself until the code is clean.
 
 ---
 
@@ -48,9 +57,10 @@ flowchart LR
 ## Key Features
 
 - **Real-Time Streaming** — Watch agents think and write live via Server-Sent Events. Every reasoning step, every line of code, as it happens.
-- **Multi-Agent Collaboration** — Four specialized agents with distinct roles and personalities, communicating through a shared context window.
+- **5-Agent Collaboration** — Five specialized agents with distinct roles and personalities, communicating through a shared context window.
 - **Automatic Code Review** — The Reviewer agent catches bugs, security issues, and anti-patterns, triggering automatic revisions.
-- **Iterative Refinement** — If code doesn't pass review, the Developer revises automatically before testing.
+- **Self-Evolving Debug Loop** — Inspired by OpenEvolve: if tests fail, the Debugger diagnoses root causes and the team re-iterates (up to 3 cycles) until all tests pass.
+- **Vibe Debugging** — The AI team keeps debugging itself autonomously — you just watch it work.
 - **Beautiful Dark UI** — NVIDIA-branded dark theme with split-panel workspace, syntax highlighting, and smooth animations.
 - **Mobile Responsive** — Full functionality on desktop and mobile with a tabbed interface on smaller screens.
 
@@ -63,7 +73,7 @@ flowchart LR
 | **Framework** | Next.js 15 (App Router) |
 | **Language** | TypeScript |
 | **Styling** | Tailwind CSS 4 |
-| **AI Model** | `nvidia/llama-3.1-nemotron-70b-instruct` |
+| **AI Model** | `mistralai/mistral-nemotron` |
 | **AI API** | NVIDIA NIM (OpenAI-compatible) |
 | **Streaming** | Server-Sent Events (SSE) |
 | **Code Display** | react-syntax-highlighter |
@@ -152,19 +162,19 @@ src/
 1. **User submits a task** on the landing page or workspace
 2. **Frontend** sends a POST request to `/api/agents` with the task description
 3. **API Route** creates an SSE stream and starts the orchestrator
-4. **Orchestrator** runs agents sequentially:
-   - **Architect** receives the task, outputs an implementation plan
-   - **Developer** receives the plan, writes complete code
-   - **Reviewer** audits the code, either approves or requests revision
-   - If revision needed → **Developer** rewrites based on feedback
-   - **Tester** writes tests for the final approved code
+4. **Orchestrator** runs the two-phase pipeline:
+   - **Phase 1 (Initial):** Architect → Developer → Reviewer → (Revision) → Tester
+   - **Phase 2 (Evolution):** If Tester finds failures →
+     Debugger diagnoses → Developer fixes → Reviewer re-checks → Tester re-tests.
+     Repeats up to 3 evolution cycles until all tests pass.
 5. **SSE Events** stream back to the frontend in real-time:
    - `agent_start` — a new agent begins working
    - `agent_chunk` — streaming text token
    - `agent_complete` — agent finished
    - `code_update` — new code block extracted
-   - `workflow_complete` — all agents done
-6. **Frontend** renders the live chat feed and updates the code panel
+   - `evolution_cycle` — a new debug-fix-test cycle has started
+   - `workflow_complete` — all agents done (with cycle count)
+6. **Frontend** renders the live chat feed, updates the code panel, and shows evolution cycle progress
 
 ---
 

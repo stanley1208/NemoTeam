@@ -1,6 +1,8 @@
-import { AGENTS, AGENT_ORDER } from "./agents";
+import { AGENTS } from "./agents";
 import { streamNemotronChat, ChatMessage } from "./nemotron";
 import { AgentRole, SSEEvent, CodeBlock } from "@/types";
+
+const MAX_EVOLUTION_CYCLES = 3;
 
 /**
  * Extract code blocks from markdown-formatted text.
@@ -14,7 +16,6 @@ function extractCodeBlocks(text: string): CodeBlock[] {
     const language = match[1] || "plaintext";
     const code = match[2].trim();
 
-    // Try to extract filename from first comment line
     const filenameMatch = code.match(
       /^(?:\/\/|#|--|\/\*)\s*filename:\s*(.+?)(?:\s*\*\/)?$/m
     );
@@ -30,168 +31,336 @@ function extractCodeBlocks(text: string): CodeBlock[] {
 }
 
 /**
- * Run the multi-agent orchestration pipeline.
- * Yields SSE events as agents think and produce output.
+ * Run a single agent: stream its response and yield SSE events.
+ * Returns the full response text.
+ */
+async function* runAgent(
+  role: AgentRole,
+  messages: ChatMessage[]
+): AsyncGenerator<SSEEvent, string> {
+  const agent = AGENTS[role];
+
+  yield {
+    type: "agent_start",
+    role,
+    timestamp: Date.now(),
+  };
+
+  let fullResponse = "";
+  try {
+    for await (const chunk of streamNemotronChat(messages)) {
+      fullResponse += chunk;
+      yield {
+        type: "agent_chunk",
+        role,
+        content: chunk,
+        timestamp: Date.now(),
+      };
+    }
+  } catch (error) {
+    yield {
+      type: "workflow_error",
+      error: `Agent ${agent.name} encountered an error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      timestamp: Date.now(),
+    };
+    return fullResponse;
+  }
+
+  yield {
+    type: "agent_complete",
+    role,
+    content: fullResponse,
+    timestamp: Date.now(),
+  };
+
+  return fullResponse;
+}
+
+/**
+ * Build the context message from conversation history.
+ */
+function buildContext(
+  task: string,
+  history: { role: AgentRole; content: string }[],
+  extraNote?: string
+): string {
+  let context = `Original task: ${task}\n\n--- Team Conversation ---\n`;
+  for (const msg of history) {
+    const a = AGENTS[msg.role];
+    context += `\n[${a.name} - ${a.title}]:\n${msg.content}\n`;
+  }
+  if (extraNote) {
+    context += `\n--- Additional Instructions ---\n${extraNote}\n`;
+  }
+  return context;
+}
+
+/**
+ * OpenEvolve-inspired orchestration pipeline.
+ *
+ * Phase 1 (Initial): Architect → Developer → Reviewer (with revision) → Tester
+ * Phase 2 (Evolution Loop):
+ *   If Tester finds failures →
+ *     Debugger diagnoses → Developer fixes → Reviewer re-checks → Tester re-tests
+ *   Repeat until Tester says ALL TESTS PASS or max cycles reached.
  */
 export async function* runOrchestration(
   task: string
 ): AsyncGenerator<SSEEvent> {
-  const conversationHistory: { role: AgentRole; content: string }[] = [];
-  let allCodeBlocks: CodeBlock[] = [];
-  let revisionCount = 0;
-  const maxRevisions = 1;
+  const history: { role: AgentRole; content: string }[] = [];
+  let latestCode = "";
 
-  for (const agentRole of AGENT_ORDER) {
-    const agent = AGENTS[agentRole];
+  // ──────────────────────────────────────────
+  // PHASE 1: Initial pipeline
+  // ──────────────────────────────────────────
 
-    // Signal that this agent is starting
-    yield {
-      type: "agent_start",
-      role: agentRole,
-      timestamp: Date.now(),
-    };
+  // 1. Architect
+  const architectMsgs: ChatMessage[] = [
+    { role: "system", content: AGENTS.architect.systemPrompt },
+    { role: "user", content: `Here is the coding task:\n\n${task}` },
+  ];
 
-    // Build the message context for this agent
-    const messages: ChatMessage[] = [
-      { role: "system", content: agent.systemPrompt },
+  let response = "";
+  for await (const event of runAgent("architect", architectMsgs)) {
+    if (typeof event === "string") { response = event; continue; }
+    yield event;
+    if (event.type === "agent_complete") response = event.content || "";
+  }
+  history.push({ role: "architect", content: response });
+
+  // 2. Developer (initial implementation)
+  const devMsgs: ChatMessage[] = [
+    { role: "system", content: AGENTS.developer.systemPrompt },
+    { role: "user", content: buildContext(task, history) },
+  ];
+
+  response = "";
+  for await (const event of runAgent("developer", devMsgs)) {
+    if (typeof event === "string") { response = event; continue; }
+    yield event;
+    if (event.type === "agent_complete") response = event.content || "";
+  }
+  history.push({ role: "developer", content: response });
+  latestCode = response;
+
+  // Emit code blocks
+  const initialBlocks = extractCodeBlocks(latestCode);
+  for (const block of initialBlocks) {
+    yield { type: "code_update", role: "developer", code: block, timestamp: Date.now() };
+  }
+
+  // 3. Reviewer (initial review)
+  const reviewMsgs: ChatMessage[] = [
+    { role: "system", content: AGENTS.reviewer.systemPrompt },
+    { role: "user", content: buildContext(task, history) },
+  ];
+
+  response = "";
+  for await (const event of runAgent("reviewer", reviewMsgs)) {
+    if (typeof event === "string") { response = event; continue; }
+    yield event;
+    if (event.type === "agent_complete") response = event.content || "";
+  }
+  history.push({ role: "reviewer", content: response });
+
+  // 3b. If reviewer needs revision, developer revises once
+  if (response.includes("NEEDS REVISION")) {
+    const revMsgs: ChatMessage[] = [
+      { role: "system", content: AGENTS.developer.systemPrompt },
+      {
+        role: "user",
+        content: buildContext(
+          task,
+          history,
+          "The Reviewer found issues. Please revise your code to address ALL the feedback. Output the complete revised code."
+        ),
+      },
     ];
 
-    if (agentRole === "architect") {
-      messages.push({
-        role: "user",
-        content: `Here is the coding task:\n\n${task}`,
-      });
-    } else {
-      // Give the agent the full conversation so far
-      let context = `Original task: ${task}\n\n--- Team Conversation ---\n`;
-      for (const msg of conversationHistory) {
-        const a = AGENTS[msg.role];
-        context += `\n[${a.name} - ${a.title}]:\n${msg.content}\n`;
-      }
-      messages.push({ role: "user", content: context });
+    response = "";
+    for await (const event of runAgent("developer", revMsgs)) {
+      if (typeof event === "string") { response = event; continue; }
+      yield event;
+      if (event.type === "agent_complete") response = event.content || "";
     }
+    history.push({ role: "developer", content: response });
+    latestCode = response;
 
-    // Stream the agent's response
-    let fullResponse = "";
-    try {
-      for await (const chunk of streamNemotronChat(messages)) {
-        fullResponse += chunk;
-        yield {
-          type: "agent_chunk",
-          role: agentRole,
-          content: chunk,
-          timestamp: Date.now(),
-        };
-      }
-    } catch (error) {
-      yield {
-        type: "workflow_error",
-        error: `Agent ${agent.name} encountered an error: ${error instanceof Error ? error.message : "Unknown error"}`,
-        timestamp: Date.now(),
-      };
-      return;
-    }
-
-    // Record the agent's response
-    conversationHistory.push({ role: agentRole, content: fullResponse });
-
-    // Extract code blocks if this is the developer
-    if (agentRole === "developer") {
-      const blocks = extractCodeBlocks(fullResponse);
-      if (blocks.length > 0) {
-        allCodeBlocks = blocks;
-        for (const block of blocks) {
-          yield {
-            type: "code_update",
-            role: agentRole,
-            code: block,
-            timestamp: Date.now(),
-          };
-        }
-      }
-    }
-
-    yield {
-      type: "agent_complete",
-      role: agentRole,
-      content: fullResponse,
-      timestamp: Date.now(),
-    };
-
-    // If reviewer says "NEEDS REVISION" and we haven't exceeded max revisions,
-    // loop back to developer
-    if (
-      agentRole === "reviewer" &&
-      fullResponse.includes("NEEDS REVISION") &&
-      revisionCount < maxRevisions
-    ) {
-      revisionCount++;
-
-      // Run developer again with review feedback
-      const devAgent = AGENTS["developer"];
-      yield {
-        type: "agent_start",
-        role: "developer",
-        timestamp: Date.now(),
-      };
-
-      const revisionMessages: ChatMessage[] = [
-        { role: "system", content: devAgent.systemPrompt },
-        {
-          role: "user",
-          content: `Original task: ${task}\n\n--- Reviewer Feedback ---\n${fullResponse}\n\n--- Your Previous Code ---\n${conversationHistory.find((m) => m.role === "developer")?.content}\n\nPlease revise the code based on the reviewer's feedback. Output the complete revised code.`,
-        },
-      ];
-
-      let revisionResponse = "";
-      try {
-        for await (const chunk of streamNemotronChat(revisionMessages)) {
-          revisionResponse += chunk;
-          yield {
-            type: "agent_chunk",
-            role: "developer",
-            content: chunk,
-            timestamp: Date.now(),
-          };
-        }
-      } catch (error) {
-        yield {
-          type: "workflow_error",
-          error: `Revision failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-          timestamp: Date.now(),
-        };
-        return;
-      }
-
-      conversationHistory.push({
-        role: "developer",
-        content: revisionResponse,
-      });
-
-      const revisedBlocks = extractCodeBlocks(revisionResponse);
-      if (revisedBlocks.length > 0) {
-        allCodeBlocks = revisedBlocks;
-        for (const block of revisedBlocks) {
-          yield {
-            type: "code_update",
-            role: "developer",
-            code: block,
-            timestamp: Date.now(),
-          };
-        }
-      }
-
-      yield {
-        type: "agent_complete",
-        role: "developer",
-        content: revisionResponse,
-        timestamp: Date.now(),
-      };
+    const revisedBlocks = extractCodeBlocks(latestCode);
+    for (const block of revisedBlocks) {
+      yield { type: "code_update", role: "developer", code: block, timestamp: Date.now() };
     }
   }
 
+  // 4. Tester (initial test)
+  const testMsgs: ChatMessage[] = [
+    { role: "system", content: AGENTS.tester.systemPrompt },
+    { role: "user", content: buildContext(task, history) },
+  ];
+
+  response = "";
+  for await (const event of runAgent("tester", testMsgs)) {
+    if (typeof event === "string") { response = event; continue; }
+    yield event;
+    if (event.type === "agent_complete") response = event.content || "";
+  }
+  history.push({ role: "tester", content: response });
+
+  // ──────────────────────────────────────────
+  // PHASE 2: Evolution loop (OpenEvolve-inspired)
+  //
+  // If tests fail → Debugger → Developer → Reviewer → Tester
+  // Repeat until PASS or max cycles
+  // ──────────────────────────────────────────
+
+  let cycle = 0;
+
+  while (
+    cycle < MAX_EVOLUTION_CYCLES &&
+    !response.includes("ALL TESTS PASS") &&
+    response.includes("TESTS FAILING")
+  ) {
+    cycle++;
+
+    // Signal a new evolution cycle
+    yield {
+      type: "evolution_cycle",
+      cycle,
+      maxCycles: MAX_EVOLUTION_CYCLES,
+      timestamp: Date.now(),
+    };
+
+    // A. Debugger — diagnose the failures
+    const debugMsgs: ChatMessage[] = [
+      { role: "system", content: AGENTS.debugger.systemPrompt },
+      {
+        role: "user",
+        content: buildContext(
+          task,
+          history,
+          `This is evolution cycle ${cycle}/${MAX_EVOLUTION_CYCLES}. Analyze the test failures above and provide precise fix specifications.`
+        ),
+      },
+    ];
+
+    response = "";
+    for await (const event of runAgent("debugger", debugMsgs)) {
+      if (typeof event === "string") { response = event; continue; }
+      yield event;
+      if (event.type === "agent_complete") response = event.content || "";
+    }
+    history.push({ role: "debugger", content: response });
+
+    // If debugger says code is clean, we're done
+    if (response.includes("CODE IS CLEAN")) {
+      break;
+    }
+
+    // B. Developer — apply the fixes
+    const fixMsgs: ChatMessage[] = [
+      { role: "system", content: AGENTS.developer.systemPrompt },
+      {
+        role: "user",
+        content: buildContext(
+          task,
+          history,
+          `Evolution cycle ${cycle}/${MAX_EVOLUTION_CYCLES}: The Debugger has identified specific bugs. Apply ALL fixes precisely as specified. Output the complete fixed code.`
+        ),
+      },
+    ];
+
+    response = "";
+    for await (const event of runAgent("developer", fixMsgs)) {
+      if (typeof event === "string") { response = event; continue; }
+      yield event;
+      if (event.type === "agent_complete") response = event.content || "";
+    }
+    history.push({ role: "developer", content: response });
+    latestCode = response;
+
+    const fixedBlocks = extractCodeBlocks(latestCode);
+    for (const block of fixedBlocks) {
+      yield { type: "code_update", role: "developer", code: block, timestamp: Date.now() };
+    }
+
+    // C. Reviewer — quick re-check
+    const reReviewMsgs: ChatMessage[] = [
+      { role: "system", content: AGENTS.reviewer.systemPrompt },
+      {
+        role: "user",
+        content: buildContext(
+          task,
+          history,
+          `Evolution cycle ${cycle}: This is a re-review of fixed code. Focus on whether the Debugger's identified bugs have been properly addressed.`
+        ),
+      },
+    ];
+
+    response = "";
+    for await (const event of runAgent("reviewer", reReviewMsgs)) {
+      if (typeof event === "string") { response = event; continue; }
+      yield event;
+      if (event.type === "agent_complete") response = event.content || "";
+    }
+    history.push({ role: "reviewer", content: response });
+
+    // If reviewer still wants revision, developer fixes inline
+    if (response.includes("NEEDS REVISION")) {
+      const quickFixMsgs: ChatMessage[] = [
+        { role: "system", content: AGENTS.developer.systemPrompt },
+        {
+          role: "user",
+          content: buildContext(
+            task,
+            history,
+            "Quick fix pass: address the remaining review issues. Output the complete code."
+          ),
+        },
+      ];
+
+      response = "";
+      for await (const event of runAgent("developer", quickFixMsgs)) {
+        if (typeof event === "string") { response = event; continue; }
+        yield event;
+        if (event.type === "agent_complete") response = event.content || "";
+      }
+      history.push({ role: "developer", content: response });
+      latestCode = response;
+
+      const quickFixBlocks = extractCodeBlocks(latestCode);
+      for (const block of quickFixBlocks) {
+        yield { type: "code_update", role: "developer", code: block, timestamp: Date.now() };
+      }
+    }
+
+    // D. Tester — re-test
+    const reTestMsgs: ChatMessage[] = [
+      { role: "system", content: AGENTS.tester.systemPrompt },
+      {
+        role: "user",
+        content: buildContext(
+          task,
+          history,
+          `Evolution cycle ${cycle}: Re-test the latest code. Check if previous failures are fixed and look for any new issues.`
+        ),
+      },
+    ];
+
+    response = "";
+    for await (const event of runAgent("tester", reTestMsgs)) {
+      if (typeof event === "string") { response = event; continue; }
+      yield event;
+      if (event.type === "agent_complete") response = event.content || "";
+    }
+    history.push({ role: "tester", content: response });
+  }
+
+  // ──────────────────────────────────────────
+  // Done
+  // ──────────────────────────────────────────
   yield {
     type: "workflow_complete",
+    cycle,
     timestamp: Date.now(),
   };
 }

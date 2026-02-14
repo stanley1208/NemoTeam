@@ -28,6 +28,8 @@ function WorkspaceContent() {
   const [completedAgents, setCompletedAgents] = useState<AgentRole[]>([]);
   const [status, setStatus] = useState<WorkflowStatus>("idle");
   const [activeTab, setActiveTab] = useState<"chat" | "code">("chat");
+  const [evolutionCycle, setEvolutionCycle] = useState(0);
+  const [maxEvolutionCycles, setMaxEvolutionCycles] = useState(3);
 
   const currentMessageId = useRef<string | null>(null);
   const hasAutoRun = useRef(false);
@@ -39,6 +41,7 @@ function WorkspaceContent() {
     setActiveAgent(null);
     setCompletedAgents([]);
     setStatus("running");
+    setEvolutionCycle(0);
     currentMessageId.current = null;
 
     try {
@@ -150,9 +153,18 @@ function WorkspaceContent() {
               break;
             }
 
+            case "evolution_cycle": {
+              setEvolutionCycle(event.cycle || 0);
+              if (event.maxCycles) setMaxEvolutionCycles(event.maxCycles);
+              // Reset completed agents for the new cycle
+              setCompletedAgents([]);
+              break;
+            }
+
             case "workflow_complete": {
               setStatus("completed");
               setActiveAgent(null);
+              if (event.cycle !== undefined) setEvolutionCycle(event.cycle);
               break;
             }
 
@@ -204,6 +216,8 @@ function WorkspaceContent() {
         activeAgent={activeAgent}
         completedAgents={completedAgents}
         status={status}
+        evolutionCycle={evolutionCycle}
+        maxEvolutionCycles={maxEvolutionCycles}
       />
 
       {/* Mobile tab switcher */}
