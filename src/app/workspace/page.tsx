@@ -32,6 +32,11 @@ function WorkspaceContent() {
   const [maxEvolutionCycles, setMaxEvolutionCycles] = useState(3);
   const [savedFiles, setSavedFiles] = useState<string[]>([]);
   const [outputDir, setOutputDir] = useState<string>("");
+  const [executionResult, setExecutionResult] = useState<{
+    success?: boolean;
+    output?: string;
+    error?: string;
+  } | null>(null);
 
   const currentMessageId = useRef<string | null>(null);
   const hasAutoRun = useRef(false);
@@ -46,6 +51,7 @@ function WorkspaceContent() {
     setEvolutionCycle(0);
     setSavedFiles([]);
     setOutputDir("");
+    setExecutionResult(null);
     currentMessageId.current = null;
 
     try {
@@ -168,6 +174,45 @@ function WorkspaceContent() {
             case "files_saved": {
               if (event.savedFiles) setSavedFiles(event.savedFiles);
               if (event.outputDir) setOutputDir(event.outputDir);
+              break;
+            }
+
+            case "execution_start": {
+              setExecutionResult(null);
+              // Show execution as a system message
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `exec-start-${Date.now()}`,
+                  role: "tester" as AgentRole,
+                  content: `**Executing generated code...**`,
+                  timestamp: event.timestamp,
+                  isStreaming: false,
+                },
+              ]);
+              break;
+            }
+
+            case "execution_result": {
+              const success = event.executionSuccess;
+              const output = event.executionOutput || "";
+              const error = event.executionError || "";
+              setExecutionResult({ success, output, error });
+
+              const resultContent = success
+                ? `**Execution successful!**\n\n\`\`\`\n${output}\n\`\`\``
+                : `**Execution failed!**\n\n\`\`\`\n${error}\n\`\`\`${output ? `\n\nPartial output:\n\`\`\`\n${output}\n\`\`\`` : ""}`;
+
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `exec-result-${Date.now()}`,
+                  role: "tester" as AgentRole,
+                  content: resultContent,
+                  timestamp: event.timestamp,
+                  isStreaming: false,
+                },
+              ]);
               break;
             }
 
@@ -307,7 +352,7 @@ function WorkspaceContent() {
               </span>
             )}
           </div>
-          <CodePanel codeBlocks={codeBlocks} savedFiles={savedFiles} outputDir={outputDir} />
+          <CodePanel codeBlocks={codeBlocks} savedFiles={savedFiles} outputDir={outputDir} executionResult={executionResult} />
         </div>
       </div>
     </div>

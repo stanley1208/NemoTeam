@@ -3,13 +3,18 @@
 import { CodeBlock } from "@/types";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { Copy, Check, FileCode2, FolderOpen, Terminal } from "lucide-react";
+import { Copy, Check, FileCode2, FolderOpen, Terminal, CheckCircle2, XCircle } from "lucide-react";
 import { useState } from "react";
 
 interface CodePanelProps {
   codeBlocks: CodeBlock[];
   savedFiles?: string[];
   outputDir?: string;
+  executionResult?: {
+    success?: boolean;
+    output?: string;
+    error?: string;
+  } | null;
 }
 
 function CodeBlockCard({ block, index }: { block: CodeBlock; index: number }) {
@@ -147,7 +152,49 @@ function SavedFilesBanner({
   );
 }
 
-export default function CodePanel({ codeBlocks, savedFiles, outputDir }: CodePanelProps) {
+function ExecutionResultBanner({
+  result,
+}: {
+  result: { success?: boolean; output?: string; error?: string };
+}) {
+  const isSuccess = result.success;
+  return (
+    <div
+      className={`mx-5 mt-5 rounded-xl border p-5 ${
+        isSuccess
+          ? "border-nvidia/20 bg-nvidia/5"
+          : "border-red-500/20 bg-red-500/5"
+      }`}
+    >
+      <div className="flex items-center gap-3 mb-3">
+        {isSuccess ? (
+          <CheckCircle2 className="h-5 w-5 text-nvidia" />
+        ) : (
+          <XCircle className="h-5 w-5 text-red-400" />
+        )}
+        <span
+          className={`text-sm font-bold ${
+            isSuccess ? "text-nvidia" : "text-red-400"
+          }`}
+        >
+          {isSuccess ? "Execution Successful" : "Execution Failed — Auto-debugging..."}
+        </span>
+      </div>
+      {result.output && (
+        <pre className="text-xs text-zinc-300 bg-black/30 rounded-lg p-3 mt-3 overflow-x-auto whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+          {result.output}
+        </pre>
+      )}
+      {result.error && !isSuccess && (
+        <pre className="text-xs text-red-300 bg-black/30 rounded-lg p-3 mt-3 overflow-x-auto whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+          {result.error}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+export default function CodePanel({ codeBlocks, savedFiles, outputDir, executionResult }: CodePanelProps) {
   if (codeBlocks.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-zinc-600">
@@ -164,6 +211,7 @@ export default function CodePanel({ codeBlocks, savedFiles, outputDir }: CodePan
 
   return (
     <div className="flex-1 overflow-y-auto pb-5">
+      {executionResult && <ExecutionResultBanner result={executionResult} />}
       {savedFiles && savedFiles.length > 0 && outputDir && (
         <SavedFilesBanner savedFiles={savedFiles} outputDir={outputDir} />
       )}

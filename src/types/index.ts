@@ -40,6 +40,8 @@ export type SSEEventType =
   | "agent_complete"
   | "code_update"
   | "files_saved"
+  | "execution_start"
+  | "execution_result"
   | "evolution_cycle"
   | "workflow_complete"
   | "workflow_error";
@@ -54,6 +56,9 @@ export interface SSEEvent {
   maxCycles?: number;
   savedFiles?: string[];
   outputDir?: string;
+  executionSuccess?: boolean;
+  executionOutput?: string;
+  executionError?: string;
   timestamp: number;
 }
 

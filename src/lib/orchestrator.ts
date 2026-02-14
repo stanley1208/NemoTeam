@@ -3,8 +3,11 @@ import { streamNemotronChat, ChatMessage } from "./nemotron";
 import { AgentRole, SSEEvent, CodeBlock } from "@/types";
 import * as fs from "fs";
 import * as path from "path";
+import { execSync } from "child_process";
 
 const MAX_EVOLUTION_CYCLES = 3;
+const MAX_EXECUTION_RETRIES = 3;
+const EXECUTION_TIMEOUT_MS = 30000; // 30 second timeout
 const OUTPUT_DIR = path.join(process.cwd(), "output");
 
 /**
@@ -92,6 +95,97 @@ function saveCodeBlocks(blocks: CodeBlock[]): string[] {
   }
 
   return savedPaths;
+}
+
+/**
+ * Determine the run command for a saved file.
+ */
+function getRunCommand(filename: string): string | null {
+  const ext = path.extname(filename).toLowerCase();
+  const filePath = path.join(OUTPUT_DIR, filename);
+
+  // Set up environment with CUDA DLL paths for CuPy
+  const cudaPaths = [
+    path.join(process.cwd(), "node_modules"),
+    "C:\\Users\\user\\anaconda3\\Lib\\site-packages\\torch\\lib",
+    "C:\\Users\\user\\anaconda3\\Lib\\site-packages\\nvidia\\cuda_nvrtc\\bin",
+  ].join(path.delimiter);
+
+  switch (ext) {
+    case ".py":
+      return `set "PATH=${cudaPaths};%PATH%" && python "${filePath}"`;
+    case ".js":
+      return `node "${filePath}"`;
+    case ".ts":
+      return `npx tsx "${filePath}"`;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Execute a saved code file and return the result.
+ */
+function executeCode(filename: string): {
+  success: boolean;
+  output: string;
+  error: string;
+} {
+  const cmd = getRunCommand(filename);
+  if (!cmd) {
+    return {
+      success: false,
+      output: "",
+      error: `No known runner for file: ${filename}`,
+    };
+  }
+
+  try {
+    const output = execSync(cmd, {
+      timeout: EXECUTION_TIMEOUT_MS,
+      encoding: "utf-8",
+      shell: "cmd.exe",
+      cwd: process.cwd(),
+      maxBuffer: 1024 * 1024, // 1MB
+    });
+    return { success: true, output: output.trim(), error: "" };
+  } catch (err: unknown) {
+    const execErr = err as { stderr?: string; stdout?: string; message?: string };
+    const stderr = execErr.stderr || "";
+    const stdout = execErr.stdout || "";
+    const msg = execErr.message || "Unknown execution error";
+
+    // Extract just the meaningful error (last part of traceback)
+    let cleanError = stderr || msg;
+    const lines = cleanError.split("\n");
+    if (lines.length > 15) {
+      // Keep first 3 lines + last 10 lines for traceback
+      cleanError = [
+        ...lines.slice(0, 3),
+        "  ...",
+        ...lines.slice(-10),
+      ].join("\n");
+    }
+
+    return {
+      success: false,
+      output: stdout.trim(),
+      error: cleanError.trim(),
+    };
+  }
+}
+
+/**
+ * Find the main runnable file from saved files.
+ */
+function findMainFile(savedFiles: string[]): string | null {
+  // Prefer main.py, main.js, etc.
+  const mainFile = savedFiles.find((f) => f.startsWith("main."));
+  if (mainFile) return mainFile;
+
+  // Otherwise pick the first runnable file
+  const runnableExts = [".py", ".js", ".ts"];
+  return savedFiles.find((f) => runnableExts.includes(path.extname(f).toLowerCase())) || null;
 }
 
 /**
@@ -449,14 +543,25 @@ export async function* runOrchestration(
   }
 
   // ──────────────────────────────────────────
-  // Save generated code to output/ folder
+  // PHASE 3: Save, Execute, and Auto-Debug
+  //
+  // Save code → Run it → If error, Debugger
+  // fixes → Re-save → Re-run until success
+  // or max retries.
   // ──────────────────────────────────────────
-  const finalBlocks = extractCodeBlocks(latestCode);
-  if (finalBlocks.length > 0) {
-    const savedFiles = saveCodeBlocks(finalBlocks);
 
-    // Re-emit updated code blocks with savedPath
-    for (const block of finalBlocks) {
+  let executionSuccess = false;
+  let executionAttempt = 0;
+
+  while (executionAttempt < MAX_EXECUTION_RETRIES) {
+    // Save the latest code
+    const blocks = extractCodeBlocks(latestCode);
+    if (blocks.length === 0) break;
+
+    const savedFiles = saveCodeBlocks(blocks);
+
+    // Emit updated code blocks
+    for (const block of blocks) {
       yield { type: "code_update", role: "developer", code: block, timestamp: Date.now() };
     }
 
@@ -466,6 +571,97 @@ export async function* runOrchestration(
       outputDir: OUTPUT_DIR,
       timestamp: Date.now(),
     };
+
+    // Find the main file to run
+    const mainFile = findMainFile(savedFiles);
+    if (!mainFile) {
+      // No runnable file, just finish
+      break;
+    }
+
+    // Execute the code
+    yield {
+      type: "execution_start",
+      content: `Running ${mainFile}...`,
+      timestamp: Date.now(),
+    };
+
+    const result = executeCode(mainFile);
+
+    yield {
+      type: "execution_result",
+      executionSuccess: result.success,
+      executionOutput: result.output,
+      executionError: result.error,
+      timestamp: Date.now(),
+    };
+
+    if (result.success) {
+      executionSuccess = true;
+      break;
+    }
+
+    // Execution failed — feed real error to Debugger → Developer loop
+    executionAttempt++;
+    if (executionAttempt >= MAX_EXECUTION_RETRIES) break;
+
+    cycle++;
+    yield {
+      type: "evolution_cycle",
+      cycle,
+      maxCycles: MAX_EVOLUTION_CYCLES + MAX_EXECUTION_RETRIES,
+      content: `Execution failed — auto-debugging (attempt ${executionAttempt}/${MAX_EXECUTION_RETRIES})`,
+      timestamp: Date.now(),
+    };
+
+    // Add the execution error to history
+    history.push({
+      role: "tester",
+      content: `REAL EXECUTION FAILED with the following error:\n\n${result.error}\n\nStdout (if any):\n${result.output}\n\nVERDICT: TESTS FAILING`,
+    });
+
+    // Debugger diagnoses the real error
+    const execDebugMsgs: ChatMessage[] = [
+      { role: "system", content: AGENTS.debugger.systemPrompt },
+      {
+        role: "user",
+        content: buildContext(
+          task,
+          history,
+          `CRITICAL: The code was actually executed and CRASHED with a real runtime error (shown above from the Tester). This is NOT a hypothetical test — the code literally failed when run. Diagnose the exact cause of the runtime error and provide precise fix specifications.`
+        ),
+      },
+    ];
+
+    response = "";
+    for await (const event of runAgent("debugger", execDebugMsgs)) {
+      if (typeof event === "string") { response = event; continue; }
+      yield event;
+      if (event.type === "agent_complete") response = event.content || "";
+    }
+    history.push({ role: "debugger", content: response });
+
+    // Developer applies the fix
+    const execFixMsgs: ChatMessage[] = [
+      { role: "system", content: AGENTS.developer.systemPrompt },
+      {
+        role: "user",
+        content: buildContext(
+          task,
+          history,
+          `URGENT: The code crashed during real execution. The Debugger has diagnosed the issue above. Apply the fix and output the COMPLETE corrected code. Make sure ALL imports and API calls are correct.`
+        ),
+      },
+    ];
+
+    response = "";
+    for await (const event of runAgent("developer", execFixMsgs)) {
+      if (typeof event === "string") { response = event; continue; }
+      yield event;
+      if (event.type === "agent_complete") response = event.content || "";
+    }
+    history.push({ role: "developer", content: response });
+    latestCode = response;
   }
 
   // ──────────────────────────────────────────
@@ -474,6 +670,7 @@ export async function* runOrchestration(
   yield {
     type: "workflow_complete",
     cycle,
+    executionSuccess,
     timestamp: Date.now(),
   };
 }
