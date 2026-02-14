@@ -7,8 +7,23 @@ import { execSync } from "child_process";
 
 const MAX_EVOLUTION_CYCLES = 3;
 const MAX_EXECUTION_RETRIES = 3;
-const EXECUTION_TIMEOUT_MS = 30000; // 30 second timeout
+const EXECUTION_TIMEOUT_MS = 60000; // 60 second timeout (GPU benchmarks need more time)
 const OUTPUT_DIR = path.join(process.cwd(), "output");
+
+/**
+ * System context that agents receive so they know what's available.
+ */
+const SYSTEM_CONTEXT = `
+SYSTEM ENVIRONMENT (use this info to write compatible code):
+- OS: Windows 10
+- Python: 3.13
+- GPU: NVIDIA GeForce GTX 1080 Ti (11 GB, CUDA 12.6)
+- Installed Python packages: cupy, numpy, torch (available for CUDA DLLs)
+- CuPy API notes: use cupy.cuda.runtime.getDeviceProperties(0) for GPU info (NOT cupy.cuda.get_device_properties)
+- All generated files are saved to an output/ directory. Subdirectories are supported.
+- The main entry file should be named main.py (or contain "main" in its name).
+- For single-file solutions, put everything in one file. For multi-file, use proper Python package imports.
+`.trim();
 
 /**
  * Language to file extension mapping.
@@ -125,6 +140,33 @@ function getExecEnv(): Record<string, string> {
 }
 
 /**
+ * Try to auto-install a missing Python package.
+ */
+function tryAutoInstall(errorText: string): boolean {
+  const match = errorText.match(/No module named ['"]?(\w+)['"]?/i);
+  if (!match) return false;
+
+  const moduleName = match[1].toLowerCase();
+  // Don't try to install local modules or standard lib modules
+  const skipModules = new Set([
+    "utils", "network", "benchmark", "model", "config", "helpers",
+    "lib", "core", "data", "test", "tests", "main", "app",
+  ]);
+  if (skipModules.has(moduleName)) return false;
+
+  try {
+    execSync(`pip install ${moduleName}`, {
+      timeout: 30000,
+      encoding: "utf-8",
+      windowsHide: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Execute a saved code file and return the result.
  */
 function executeCode(filename: string): {
@@ -193,12 +235,33 @@ function executeCode(filename: string): {
     const stderr = execErr.stderr || "";
     const stdout = execErr.stdout || "";
     const msg = execErr.message || "Unknown execution error";
+    const fullError = stderr || msg;
+
+    // Try auto-installing missing packages before giving up
+    if (/no module named/i.test(fullError) || /ModuleNotFoundError/i.test(fullError)) {
+      const installed = tryAutoInstall(fullError);
+      if (installed) {
+        // Retry execution after installing the package
+        try {
+          const retryOutput = execSync(cmd, {
+            timeout: EXECUTION_TIMEOUT_MS,
+            encoding: "utf-8",
+            cwd: OUTPUT_DIR,
+            env: getExecEnv(),
+            maxBuffer: 1024 * 1024,
+            windowsHide: true,
+          });
+          return { success: true, output: retryOutput.trim(), error: "" };
+        } catch {
+          // Still failed after install — fall through to error handling
+        }
+      }
+    }
 
     // Extract just the meaningful error (last part of traceback)
-    let cleanError = stderr || msg;
+    let cleanError = fullError;
     const lines = cleanError.split("\n");
     if (lines.length > 20) {
-      // Keep first 3 lines + last 12 lines for traceback
       cleanError = [
         ...lines.slice(0, 3),
         "  ...",
@@ -332,7 +395,7 @@ function buildContext(
   history: { role: AgentRole; content: string }[],
   extraNote?: string
 ): string {
-  let context = `Original task: ${task}\n\n--- Team Conversation ---\n`;
+  let context = `${SYSTEM_CONTEXT}\n\nOriginal task: ${task}\n\n--- Team Conversation ---\n`;
   for (const msg of history) {
     const a = AGENTS[msg.role];
     context += `\n[${a.name} - ${a.title}]:\n${msg.content}\n`;
@@ -368,7 +431,7 @@ export async function* runOrchestration(
   // 1. Architect
   const architectMsgs: ChatMessage[] = [
     { role: "system", content: AGENTS.architect.systemPrompt },
-    { role: "user", content: `Here is the coding task:\n\n${task}` },
+    { role: "user", content: `${SYSTEM_CONTEXT}\n\nHere is the coding task:\n\n${task}` },
   ];
 
   let response = "";
