@@ -11,19 +11,74 @@ const EXECUTION_TIMEOUT_MS = 60000; // 60 second timeout (GPU benchmarks need mo
 const OUTPUT_DIR = path.join(process.cwd(), "output");
 
 /**
- * System context that agents receive so they know what's available.
+ * Detect system environment automatically.
+ * Cached after first call so we don't re-detect every time.
  */
-const SYSTEM_CONTEXT = `
-SYSTEM ENVIRONMENT (use this info to write compatible code):
-- OS: Windows 10
-- Python: 3.13
-- GPU: NVIDIA GeForce GTX 1080 Ti (11 GB, CUDA 12.6)
-- Installed Python packages: cupy, numpy, torch (available for CUDA DLLs)
-- CuPy API notes: use cupy.cuda.runtime.getDeviceProperties(0) for GPU info (NOT cupy.cuda.get_device_properties)
-- All generated files are saved to an output/ directory. Subdirectories are supported.
-- The main entry file should be named main.py (or contain "main" in its name).
-- For single-file solutions, put everything in one file. For multi-file, use proper Python package imports.
-`.trim();
+let _cachedSystemContext: string | null = null;
+
+function getSystemContext(): string {
+  if (_cachedSystemContext) return _cachedSystemContext;
+
+  const info: string[] = [
+    "SYSTEM ENVIRONMENT (use this info to write compatible code):",
+  ];
+
+  // OS
+  info.push(`- OS: ${process.platform === "win32" ? "Windows" : process.platform} ${process.arch}`);
+
+  // Node.js
+  info.push(`- Node.js: ${process.version}`);
+
+  // Python version
+  try {
+    const pyVer = execSync("python --version", { encoding: "utf-8", timeout: 5000, windowsHide: true }).trim();
+    info.push(`- ${pyVer}`);
+  } catch {
+    info.push("- Python: not detected");
+  }
+
+  // GPU detection
+  try {
+    const gpuInfo = execSync(
+      'python -c "import cupy; p=cupy.cuda.runtime.getDeviceProperties(0); print(p[\'name\'].decode()); print(round(p[\'totalGlobalMem\']/1024**3,1))"',
+      { encoding: "utf-8", timeout: 15000, windowsHide: true, env: getExecEnv() }
+    ).trim().split("\n");
+    if (gpuInfo.length >= 2) {
+      info.push(`- GPU: ${gpuInfo[0]} (${gpuInfo[1]} GB)`);
+      info.push("- CuPy is installed. Use cupy.cuda.runtime.getDeviceProperties(0) for GPU info (NOT cupy.cuda.get_device_properties)");
+    }
+  } catch {
+    // Try nvidia-smi as fallback
+    try {
+      const smi = execSync('"C:\\Windows\\System32\\nvidia-smi.exe" --query-gpu=name,memory.total --format=csv,noheader', {
+        encoding: "utf-8", timeout: 5000, windowsHide: true,
+      }).trim();
+      if (smi) info.push(`- GPU: ${smi}`);
+    } catch {
+      info.push("- GPU: none detected (CPU only)");
+    }
+  }
+
+  // Detect key Python packages
+  try {
+    const pkgs = execSync(
+      'python -c "import importlib; pkgs=[\'numpy\',\'cupy\',\'torch\',\'flask\',\'fastapi\',\'requests\',\'pandas\',\'matplotlib\']; installed=[p for p in pkgs if importlib.util.find_spec(p)]; print(\',\'.join(installed))"',
+      { encoding: "utf-8", timeout: 10000, windowsHide: true }
+    ).trim();
+    if (pkgs) info.push(`- Installed Python packages: ${pkgs}`);
+  } catch {
+    // skip
+  }
+
+  // File structure rules (always included)
+  info.push("- All generated files are saved to an output/ directory. Subdirectories are supported.");
+  info.push("- The main entry file MUST be named main.py (or contain 'main' in its name).");
+  info.push("- For simple tasks, prefer a single file. For complex tasks, use proper package imports.");
+  info.push("- The code will be executed automatically after generation. It MUST run without errors.");
+
+  _cachedSystemContext = info.join("\n");
+  return _cachedSystemContext;
+}
 
 /**
  * Language to file extension mapping.
@@ -395,7 +450,7 @@ function buildContext(
   history: { role: AgentRole; content: string }[],
   extraNote?: string
 ): string {
-  let context = `${SYSTEM_CONTEXT}\n\nOriginal task: ${task}\n\n--- Team Conversation ---\n`;
+  let context = `${getSystemContext()}\n\nOriginal task: ${task}\n\n--- Team Conversation ---\n`;
   for (const msg of history) {
     const a = AGENTS[msg.role];
     context += `\n[${a.name} - ${a.title}]:\n${msg.content}\n`;
@@ -431,7 +486,7 @@ export async function* runOrchestration(
   // 1. Architect
   const architectMsgs: ChatMessage[] = [
     { role: "system", content: AGENTS.architect.systemPrompt },
-    { role: "user", content: `${SYSTEM_CONTEXT}\n\nHere is the coding task:\n\n${task}` },
+    { role: "user", content: `${getSystemContext()}\n\nHere is the coding task:\n\n${task}` },
   ];
 
   let response = "";
