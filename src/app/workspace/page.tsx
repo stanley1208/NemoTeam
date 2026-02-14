@@ -225,7 +225,7 @@ function WorkspaceContent() {
         <button
           onClick={() => setActiveTab("chat")}
           className={cn(
-            "flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium transition-colors",
+            "flex-1 flex items-center justify-center gap-2 py-3.5 text-sm font-medium transition-colors",
             activeTab === "chat"
               ? "text-nvidia border-b-2 border-nvidia"
               : "text-zinc-500 hover:text-zinc-300"
@@ -237,7 +237,7 @@ function WorkspaceContent() {
         <button
           onClick={() => setActiveTab("code")}
           className={cn(
-            "flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium transition-colors",
+            "flex-1 flex items-center justify-center gap-2 py-3.5 text-sm font-medium transition-colors",
             activeTab === "code"
               ? "text-nvidia border-b-2 border-nvidia"
               : "text-zinc-500 hover:text-zinc-300"
@@ -246,7 +246,7 @@ function WorkspaceContent() {
           <Code2 className="h-4 w-4" />
           Code Output
           {codeBlocks.length > 0 && (
-            <span className="bg-nvidia/20 text-nvidia text-xs px-1.5 rounded-full">
+            <span className="bg-nvidia/20 text-nvidia text-xs px-2 py-0.5 rounded-full font-medium">
               {codeBlocks.length}
             </span>
           )}
@@ -258,14 +258,19 @@ function WorkspaceContent() {
         {/* Agent Chat Panel */}
         <div
           className={cn(
-            "flex flex-col border-r border-white/5",
+            "flex flex-col border-r border-white/[0.06]",
             "lg:w-1/2",
             activeTab === "chat" ? "flex w-full" : "hidden lg:flex"
           )}
         >
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/5 bg-white/[0.01]">
+          <div className="flex items-center gap-2.5 px-5 py-3 border-b border-white/[0.06] bg-white/[0.015]">
             <MessageSquare className="h-4 w-4 text-zinc-500" />
-            <h2 className="text-sm font-medium text-zinc-400">Team Chat</h2>
+            <h2 className="text-sm font-semibold text-zinc-400">Team Chat</h2>
+            {messages.length > 0 && (
+              <span className="text-[11px] text-zinc-600 bg-white/5 px-2 py-0.5 rounded-md">
+                {messages.length} messages
+              </span>
+            )}
           </div>
           <AgentChat messages={messages} activeAgent={activeAgent} />
           <TaskInput
@@ -283,11 +288,11 @@ function WorkspaceContent() {
             activeTab === "code" ? "flex w-full" : "hidden lg:flex"
           )}
         >
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/5 bg-white/[0.01]">
+          <div className="flex items-center gap-2.5 px-5 py-3 border-b border-white/[0.06] bg-white/[0.015]">
             <Code2 className="h-4 w-4 text-zinc-500" />
-            <h2 className="text-sm font-medium text-zinc-400">Code Output</h2>
+            <h2 className="text-sm font-semibold text-zinc-400">Code Output</h2>
             {codeBlocks.length > 0 && (
-              <span className="text-xs text-zinc-600">
+              <span className="text-[11px] text-zinc-600 bg-white/5 px-2 py-0.5 rounded-md">
                 {codeBlocks.length} file{codeBlocks.length > 1 ? "s" : ""}
               </span>
             )}

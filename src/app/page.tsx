@@ -99,29 +99,31 @@ export default function Home() {
             <h2 className="text-center text-2xl sm:text-3xl font-bold mb-4">
               How It Works
             </h2>
-            <p className="text-center text-zinc-500 mb-12 max-w-lg mx-auto">
-              Four specialized agents work together through a structured
-              pipeline, just like a real development team.
+            <p className="text-center text-zinc-500 mb-14 max-w-lg mx-auto leading-relaxed">
+              Five specialized agents work together through a structured
+              pipeline with a self-evolving debug loop — just like a real
+              development team.
             </p>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
               {AGENT_ORDER.map((role, index) => {
                 const agent = AGENTS[role];
                 return (
                   <div
                     key={role}
-                    className="relative rounded-2xl border border-white/5 bg-surface-raised p-5 hover:border-white/10 transition-all group"
+                    className="relative rounded-2xl border border-white/5 bg-surface-raised p-6 hover:border-white/10 hover:bg-surface-overlay/30 transition-all group"
                   >
-                    <div className="absolute top-4 right-4 text-3xl font-bold text-white/[0.03]">
+                    <div className="absolute top-5 right-5 text-3xl font-bold text-white/[0.03]">
                       {String(index + 1).padStart(2, "0")}
                     </div>
                     <AgentAvatar role={role} size="md" />
                     <h3
-                      className={`mt-4 text-sm font-semibold ${agent.color}`}
+                      className={`mt-5 text-sm font-bold ${agent.color}`}
                     >
-                      {agent.name} — {agent.title}
+                      {agent.name}
                     </h3>
-                    <p className="mt-2 text-xs text-zinc-500 leading-relaxed">
+                    <p className="text-xs text-zinc-500 mt-0.5 font-medium">{agent.title}</p>
+                    <p className="mt-3 text-xs text-zinc-600 leading-relaxed">
                       {agent.description}
                     </p>
                   </div>
@@ -134,10 +136,10 @@ export default function Home() {
         {/* Tech Section */}
         <section className="border-t border-white/5">
           <div className="mx-auto max-w-screen-xl px-4 sm:px-6 py-16 sm:py-20">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-              <div className="rounded-2xl border border-white/5 bg-surface-raised p-6">
-                <Zap className="h-8 w-8 text-nvidia mb-4" />
-                <h3 className="text-base font-semibold text-white mb-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="rounded-2xl border border-white/5 bg-surface-raised p-7 hover:border-white/10 transition-all">
+                <Zap className="h-9 w-9 text-nvidia mb-5" />
+                <h3 className="text-base font-bold text-white mb-2.5">
                   Real-Time Streaming
                 </h3>
                 <p className="text-sm text-zinc-500 leading-relaxed">
@@ -145,9 +147,9 @@ export default function Home() {
                   Every thought, every line of code, as it happens.
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/5 bg-surface-raised p-6">
-                <Shield className="h-8 w-8 text-orange-400 mb-4" />
-                <h3 className="text-base font-semibold text-white mb-2">
+              <div className="rounded-2xl border border-white/5 bg-surface-raised p-7 hover:border-white/10 transition-all">
+                <Shield className="h-9 w-9 text-orange-400 mb-5" />
+                <h3 className="text-base font-bold text-white mb-2.5">
                   Built-In Code Review
                 </h3>
                 <p className="text-sm text-zinc-500 leading-relaxed">
@@ -155,9 +157,9 @@ export default function Home() {
                   problems — triggering automatic revisions.
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/5 bg-surface-raised p-6">
-                <RefreshCw className="h-8 w-8 text-red-400 mb-4" />
-                <h3 className="text-base font-semibold text-white mb-2">
+              <div className="rounded-2xl border border-white/5 bg-surface-raised p-7 hover:border-white/10 transition-all">
+                <RefreshCw className="h-9 w-9 text-red-400 mb-5" />
+                <h3 className="text-base font-bold text-white mb-2.5">
                   Self-Evolving Debug Loop
                 </h3>
                 <p className="text-sm text-zinc-500 leading-relaxed">
@@ -165,14 +167,14 @@ export default function Home() {
                   diagnoses and the team re-iterates until all tests pass.
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/5 bg-surface-raised p-6">
-                <GitBranch className="h-8 w-8 text-purple-400 mb-4" />
-                <h3 className="text-base font-semibold text-white mb-2">
+              <div className="rounded-2xl border border-white/5 bg-surface-raised p-7 hover:border-white/10 transition-all">
+                <GitBranch className="h-9 w-9 text-purple-400 mb-5" />
+                <h3 className="text-base font-bold text-white mb-2.5">
                   Up to 3 Evolution Cycles
                 </h3>
                 <p className="text-sm text-zinc-500 leading-relaxed">
-                  The team evolves through Debugger → Developer → Reviewer
-                  → Tester cycles until the code is clean or max cycles hit.
+                  The team evolves through Debug → Fix → Review → Test
+                  cycles until the code is clean or max cycles hit.
                 </p>
               </div>
             </div>

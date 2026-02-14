@@ -28,9 +28,10 @@ export default function StatusBar({
   maxEvolutionCycles = 3,
 }: StatusBarProps) {
   return (
-    <div className="border-b border-white/5 bg-surface-raised/50 px-4 py-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1 overflow-x-auto">
+    <div className="border-b border-white/5 bg-surface-raised/50 px-6 py-4">
+      <div className="flex items-center justify-between gap-4">
+        {/* Agent pipeline */}
+        <div className="flex items-center gap-2 overflow-x-auto py-1">
           {AGENT_ORDER.map((role, index) => {
             const agent = AGENTS[role];
             const isActive = activeAgent === role;
@@ -41,40 +42,44 @@ export default function StatusBar({
               <div key={role} className="flex items-center flex-shrink-0">
                 <div
                   className={cn(
-                    "flex items-center gap-2 rounded-lg px-2.5 py-1.5 transition-all duration-300",
+                    "flex items-center gap-2.5 rounded-xl px-3 py-2 transition-all duration-300",
                     isActive && "bg-nvidia/10 border border-nvidia/20",
+                    !isActive && "border border-transparent",
                     isCompleted && "opacity-80",
                     isPending && "opacity-40"
                   )}
                 >
                   <AgentAvatar role={role} size="sm" isActive={isActive} />
-                  <div className="hidden sm:block">
+                  <div className="hidden md:block">
                     <p
                       className={cn(
-                        "text-xs font-medium",
+                        "text-xs font-semibold leading-none",
                         isActive ? agent.color : "text-zinc-400"
                       )}
                     >
                       {agent.name}
                     </p>
+                    <p className="text-[10px] text-zinc-600 mt-0.5 leading-none">
+                      {agent.title}
+                    </p>
                   </div>
-                  <div className="ml-0.5">
+                  <div>
                     {isCompleted && (
-                      <CheckCircle2 className="h-3.5 w-3.5 text-nvidia" />
+                      <CheckCircle2 className="h-4 w-4 text-nvidia" />
                     )}
                     {isActive && (
-                      <Loader2 className="h-3.5 w-3.5 text-nvidia animate-spin" />
+                      <Loader2 className="h-4 w-4 text-nvidia animate-spin" />
                     )}
                     {isPending && (
-                      <Circle className="h-3.5 w-3.5 text-zinc-600" />
+                      <Circle className="h-4 w-4 text-zinc-700" />
                     )}
                   </div>
                 </div>
                 {index < AGENT_ORDER.length - 1 && (
                   <div
                     className={cn(
-                      "w-4 h-px mx-0.5",
-                      isCompleted ? "bg-nvidia/40" : "bg-white/5"
+                      "w-6 h-px mx-1",
+                      isCompleted ? "bg-nvidia/40" : "bg-white/[0.06]"
                     )}
                   />
                 )}
@@ -83,32 +88,33 @@ export default function StatusBar({
           })}
         </div>
 
-        <div className="flex items-center gap-3 flex-shrink-0 ml-2">
+        {/* Status badges */}
+        <div className="flex items-center gap-3 flex-shrink-0">
           {evolutionCycle > 0 && (
-            <span className="flex items-center gap-1.5 text-xs text-orange-400 bg-orange-400/10 border border-orange-400/20 rounded-full px-2.5 py-1">
-              <RefreshCw className={cn("h-3 w-3", status === "running" && "animate-spin")} />
+            <span className="flex items-center gap-2 text-xs text-orange-400 bg-orange-400/10 border border-orange-400/20 rounded-full px-3.5 py-1.5 font-medium">
+              <RefreshCw className={cn("h-3.5 w-3.5", status === "running" && "animate-spin")} />
               Cycle {evolutionCycle}/{maxEvolutionCycles}
             </span>
           )}
           {status === "running" && (
-            <span className="flex items-center gap-1.5 text-xs text-nvidia">
-              <Loader2 className="h-3 w-3 animate-spin" />
+            <span className="flex items-center gap-2 text-xs text-nvidia font-medium">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
               <span className="hidden sm:inline">
-                {evolutionCycle > 0 ? "Evolving" : "Processing"}
+                {evolutionCycle > 0 ? "Evolving..." : "Processing..."}
               </span>
             </span>
           )}
           {status === "completed" && (
-            <span className="flex items-center gap-1.5 text-xs text-nvidia">
-              <CheckCircle2 className="h-3 w-3" />
+            <span className="flex items-center gap-2 text-xs text-nvidia bg-nvidia/10 border border-nvidia/20 rounded-full px-3.5 py-1.5 font-medium">
+              <CheckCircle2 className="h-3.5 w-3.5" />
               {evolutionCycle > 0
                 ? `Evolved (${evolutionCycle} cycle${evolutionCycle > 1 ? "s" : ""})`
                 : "Complete"}
             </span>
           )}
           {status === "error" && (
-            <span className="flex items-center gap-1.5 text-xs text-red-400">
-              <AlertCircle className="h-3 w-3" />
+            <span className="flex items-center gap-2 text-xs text-red-400 bg-red-400/10 border border-red-400/20 rounded-full px-3.5 py-1.5 font-medium">
+              <AlertCircle className="h-3.5 w-3.5" />
               Error
             </span>
           )}

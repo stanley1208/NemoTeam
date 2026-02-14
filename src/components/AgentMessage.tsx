@@ -12,20 +12,19 @@ interface AgentMessageProps {
 }
 
 function formatContent(content: string) {
-  // Simple markdown-like formatting for display
   const lines = content.split("\n");
   return lines.map((line, i) => {
     // Headers
     if (line.startsWith("### ")) {
       return (
-        <h4 key={i} className="text-sm font-semibold text-white mt-3 mb-1">
+        <h4 key={i} className="text-sm font-semibold text-white mt-4 mb-2">
           {line.slice(4)}
         </h4>
       );
     }
     if (line.startsWith("## ")) {
       return (
-        <h3 key={i} className="text-sm font-bold text-white mt-3 mb-1">
+        <h3 key={i} className="text-sm font-bold text-white mt-4 mb-2">
           {line.slice(3)}
         </h3>
       );
@@ -35,8 +34,8 @@ function formatContent(content: string) {
       const match = line.match(/^- \*\*(.+?)\*\*:?\s*(.*)/);
       if (match) {
         return (
-          <div key={i} className="flex gap-2 mt-1">
-            <span className="text-zinc-500 mt-0.5">•</span>
+          <div key={i} className="flex gap-2.5 mt-1.5">
+            <span className="text-zinc-500 mt-0.5 leading-none">•</span>
             <span>
               <strong className="text-zinc-100">{match[1]}</strong>
               {match[2] && (
@@ -50,8 +49,8 @@ function formatContent(content: string) {
     // Regular list items
     if (line.startsWith("- ")) {
       return (
-        <div key={i} className="flex gap-2 mt-0.5">
-          <span className="text-zinc-500">•</span>
+        <div key={i} className="flex gap-2.5 mt-1">
+          <span className="text-zinc-500 leading-none">•</span>
           <span className="text-zinc-300">{line.slice(2)}</span>
         </div>
       );
@@ -60,21 +59,21 @@ function formatContent(content: string) {
     const numMatch = line.match(/^(\d+)\.\s+(.*)/);
     if (numMatch) {
       return (
-        <div key={i} className="flex gap-2 mt-0.5">
-          <span className="text-nvidia/60 font-mono text-xs mt-0.5 min-w-[1.2rem] text-right">
+        <div key={i} className="flex gap-2.5 mt-1.5">
+          <span className="text-nvidia/60 font-mono text-xs mt-0.5 min-w-[1.5rem] text-right">
             {numMatch[1]}.
           </span>
           <span className="text-zinc-300">{numMatch[2]}</span>
         </div>
       );
     }
-    // Inline code blocks (not full code blocks)
+    // Code fences
     if (line.startsWith("```")) {
-      return null; // Skip code fences, handled by CodePanel
+      return null;
     }
     // Empty lines
     if (line.trim() === "") {
-      return <div key={i} className="h-2" />;
+      return <div key={i} className="h-3" />;
     }
     // Regular text
     return (
@@ -96,18 +95,18 @@ export default function AgentMessage({
   );
 
   return (
-    <div className={cn("fade-in-up flex gap-3 px-4 py-3")}>
+    <div className={cn("fade-in-up flex gap-4 px-5 py-5")}>
       <div className="flex-shrink-0 mt-0.5">
-        <AgentAvatar role={message.role} size="sm" isActive={isActive} />
+        <AgentAvatar role={message.role} size="md" isActive={isActive} />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1">
-          <span className={cn("text-sm font-semibold", agent.color)}>
+        <div className="flex items-baseline gap-2.5 mb-2">
+          <span className={cn("text-sm font-bold", agent.color)}>
             {agent.name}
           </span>
-          <span className="text-xs text-zinc-600">{agent.title}</span>
+          <span className="text-xs text-zinc-600 font-medium">{agent.title}</span>
         </div>
-        <div className="text-sm leading-relaxed space-y-0.5">
+        <div className="text-[13px] leading-relaxed space-y-1">
           {formattedContent}
           {message.isStreaming && <span className="typing-cursor" />}
         </div>

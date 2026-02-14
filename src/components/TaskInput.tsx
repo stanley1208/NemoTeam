@@ -33,20 +33,20 @@ export default function TaskInput({
 
   if (variant === "compact") {
     return (
-      <form onSubmit={handleSubmit} className="border-t border-white/5 p-3">
-        <div className="flex gap-2">
+      <form onSubmit={handleSubmit} className="border-t border-white/[0.06] p-4">
+        <div className="flex gap-3">
           <input
             type="text"
             value={task}
             onChange={(e) => setTask(e.target.value)}
             placeholder="Describe a new task..."
             disabled={isLoading}
-            className="flex-1 rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-nvidia/50 focus:border-nvidia/30 disabled:opacity-50 transition-all"
+            className="flex-1 rounded-xl bg-white/[0.04] border border-white/[0.08] px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-nvidia/30 focus:border-nvidia/30 disabled:opacity-50 transition-all"
           />
           <button
             type="submit"
             disabled={!task.trim() || isLoading}
-            className="flex items-center justify-center rounded-lg bg-nvidia px-4 py-2 text-sm font-medium text-black hover:bg-nvidia-light disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            className="flex items-center justify-center rounded-xl bg-nvidia px-5 py-2.5 text-sm font-semibold text-black hover:bg-nvidia-light disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             {isLoading ? (
               <Loader2 className="h-4 w-4 animate-spin" />
