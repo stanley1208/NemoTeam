@@ -192,33 +192,21 @@ function getCudaDllPaths(): string {
   if (_cachedCudaPaths !== null) return _cachedCudaPaths;
 
   try {
-    // Ask Python where the CUDA DLLs are.
-    // Uses a safe approach: checks that find_spec returns non-None AND has a valid origin.
-    // Some packages (namespace packages) have origin=None, so we must handle that.
-    const pyScript = [
-      "import importlib.util, os",
-      "paths = []",
-      "for pkg, subdir in [('torch','lib'),('nvidia.cuda_nvrtc','bin')]:",
-      "    spec = importlib.util.find_spec(pkg)",
-      "    if spec and spec.origin and spec.origin != 'None':",
-      "        paths.append(os.path.join(os.path.dirname(spec.origin), subdir))",
-      "    elif spec and spec.submodule_search_locations:",
-      "        for loc in spec.submodule_search_locations:",
-      "            candidate = os.path.join(loc, subdir)",
-      "            if os.path.isdir(candidate):",
-      "                paths.append(candidate)",
-      "                break",
-      "            parent = os.path.join(os.path.dirname(loc), subdir)",
-      "            if os.path.isdir(parent):",
-      "                paths.append(parent)",
-      "                break",
-      "print(os.pathsep.join([p for p in paths if os.path.isdir(p)]))",
-    ].join("\n");
+    // Single-line Python script that safely handles namespace packages (origin=None).
+    // torch: has origin → dirname(origin) + /lib
+    // nvidia.cuda_nvrtc: namespace pkg (no origin) → submodule_search_locations[0] + /bin
+    const cmd = 'python -c "' +
+      "import importlib.util,os,pathlib;paths=[];" +
+      "spec=importlib.util.find_spec('torch');" +
+      "paths.append(str(pathlib.Path(spec.origin).parent/'lib')) if spec and spec.origin else None;" +
+      "spec=importlib.util.find_spec('nvidia.cuda_nvrtc');" +
+      "[paths.append(os.path.join(str(p),'bin')) for p in (spec.submodule_search_locations if spec and spec.submodule_search_locations else [])];" +
+      "print(os.pathsep.join([p for p in paths if os.path.isdir(p)]))" +
+      '"';
 
-    const result = execSync(
-      `python -c "${pyScript.replace(/"/g, '\\"')}"`,
-      { encoding: "utf-8", timeout: 10000, windowsHide: true }
-    ).trim();
+    const result = execSync(cmd, {
+      encoding: "utf-8", timeout: 10000, windowsHide: true,
+    }).trim();
     _cachedCudaPaths = result;
   } catch {
     _cachedCudaPaths = "";
@@ -307,19 +295,28 @@ function executeCode(filename: string): {
 
     const trimmed = output.trim();
 
-    // Check if the output contains signs of a caught/hidden error
+    // Check if the output contains signs of a caught/hidden error.
+    // These patterns must be specific enough to avoid false positives
+    // (e.g. "failed to beat CPU" is NOT an error, but "Traceback" IS).
     const errorPatterns = [
-      /error occurred/i,
-      /traceback \(most recent call last\)/i,
-      /has no attribute/i,
-      /module.*not found/i,
-      /importerror/i,
-      /no module named/i,
-      /permission denied/i,
-      /filenotfounderror/i,
-      /syntaxerror/i,
-      /please ensure/i,
-      /failed to/i,
+      /Traceback \(most recent call last\)/,         // Python traceback (case-sensitive — always capitalized)
+      /AttributeError:/,                              // Python attribute error
+      /TypeError:/,                                   // Python type error
+      /ValueError:/,                                  // Python value error
+      /IndexError:/,                                  // Python index error
+      /KeyError:/,                                    // Python key error
+      /NameError:/,                                   // Python name error
+      /RuntimeError:/,                                // Python runtime error
+      /ModuleNotFoundError:/,                         // Python import error
+      /ImportError:/,                                 // Python import error
+      /FileNotFoundError:/,                           // Python file error
+      /SyntaxError:/,                                 // Python syntax error
+      /PermissionError:/,                             // Python permission error
+      /ZeroDivisionError:/,                           // Python division error
+      /MemoryError:/,                                 // Python OOM
+      /CUDAError:|cudaError/,                         // CUDA errors
+      /CUDA out of memory/i,                          // GPU OOM
+      /No module named ['"]?\w+['"]?/,                // Missing module
     ];
 
     const hasHiddenError = errorPatterns.some((pat) => pat.test(trimmed));
