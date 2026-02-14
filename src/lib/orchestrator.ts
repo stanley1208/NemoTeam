@@ -45,7 +45,9 @@ function getSystemContext(): string {
     ).trim().split("\n");
     if (gpuInfo.length >= 2) {
       info.push(`- GPU: ${gpuInfo[0]} (${gpuInfo[1]} GB)`);
-      info.push("- CuPy is installed. Use cupy.cuda.runtime.getDeviceProperties(0) for GPU info (NOT cupy.cuda.get_device_properties)");
+      info.push("- CuPy is installed.");
+      info.push("- CRITICAL CuPy API: cupy.cuda.runtime.getDeviceProperties(0) returns a DICT, not an object. Access fields as p['name'].decode() and p['totalGlobalMem'], NOT p.name or p.total_memory. This is the #1 most common CuPy bug.");
+      info.push("- Do NOT use cupy.cuda.get_device_properties (does not exist). Do NOT use cupy.cuda.Device().attributes (unreliable).");
     }
   } catch {
     // Try nvidia-smi as fallback
@@ -417,27 +419,43 @@ function executeCode(filename: string): {
     const trimmed = output.trim();
 
     // Check if the output contains signs of a caught/hidden error.
-    // These patterns must be specific enough to avoid false positives
-    // (e.g. "failed to beat CPU" is NOT an error, but "Traceback" IS).
+    // Includes both raw Python exceptions AND reformatted error messages
+    // (e.g., code caught the exception and printed "Error: ..." instead of crashing).
     const errorPatterns = [
-      /Traceback \(most recent call last\)/,         // Python traceback (case-sensitive — always capitalized)
-      /AttributeError:/,                              // Python attribute error
-      /TypeError:/,                                   // Python type error
-      /ValueError:/,                                  // Python value error
-      /IndexError:/,                                  // Python index error
-      /KeyError:/,                                    // Python key error
-      /NameError:/,                                   // Python name error
-      /RuntimeError:/,                                // Python runtime error
-      /ModuleNotFoundError:/,                         // Python import error
-      /ImportError:/,                                 // Python import error
-      /FileNotFoundError:/,                           // Python file error
-      /SyntaxError:/,                                 // Python syntax error
-      /PermissionError:/,                             // Python permission error
-      /ZeroDivisionError:/,                           // Python division error
-      /MemoryError:/,                                 // Python OOM
-      /CUDAError:|cudaError/,                         // CUDA errors
-      /CUDA out of memory/i,                          // GPU OOM
-      /No module named ['"]?\w+['"]?/,                // Missing module
+      // Raw Python exceptions
+      /Traceback \(most recent call last\)/,
+      /AttributeError:/,
+      /TypeError:/,
+      /ValueError:/,
+      /IndexError:/,
+      /KeyError:/,
+      /NameError:/,
+      /RuntimeError:/,
+      /ModuleNotFoundError:/,
+      /ImportError:/,
+      /FileNotFoundError:/,
+      /SyntaxError:/,
+      /PermissionError:/,
+      /ZeroDivisionError:/,
+      /MemoryError:/,
+      /OverflowError:/,
+      /CUDAError:|cudaError/,
+      /CUDA out of memory/i,
+      /No module named ['"]?\w+['"]?/,
+
+      // Reformatted/caught errors (code did try/except and printed a message)
+      /has no attribute ['"]?\w+/,                     // "'dict' object has no attribute 'name'"
+      /object is not callable/,                        // "TypeError: ... is not callable"
+      /cannot be broadcast/i,                          // numpy/cupy shape mismatch
+      /not supported between instances/,               // comparison type error
+      /invalid literal for/,                           // int/float parsing error
+
+      // Explicit failure messages printed by the code
+      /training failed/i,                              // "Training failed"
+      /execution failed/i,                             // "Execution failed"
+      /fatal error/i,                                  // "Fatal error"
+      /program terminated/i,                           // "Program terminated"
+      /please check the error/i,                       // "Please check the error messages"
     ];
 
     const hasHiddenError = errorPatterns.some((pat) => pat.test(trimmed));
