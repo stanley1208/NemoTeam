@@ -50,7 +50,8 @@ function getSystemContext(): string {
   } catch {
     // Try nvidia-smi as fallback
     try {
-      const smi = execSync('"C:\\Windows\\System32\\nvidia-smi.exe" --query-gpu=name,memory.total --format=csv,noheader', {
+      const smiCmd = process.platform === "win32" ? "nvidia-smi" : "nvidia-smi";
+      const smi = execSync(`${smiCmd} --query-gpu=name,memory.total --format=csv,noheader`, {
         encoding: "utf-8", timeout: 5000, windowsHide: true,
       }).trim();
       if (smi) info.push(`- GPU: ${smi}`);
@@ -179,17 +180,42 @@ function saveCodeBlocks(blocks: CodeBlock[]): string[] {
 }
 
 /**
- * Build the environment variables for execution (includes CUDA DLL paths).
+ * Dynamically find CUDA DLL paths from Python packages.
  */
-function getExecEnv(): Record<string, string> {
-  const cudaPaths = [
-    "C:\\Users\\user\\anaconda3\\Lib\\site-packages\\torch\\lib",
-    "C:\\Users\\user\\anaconda3\\Lib\\site-packages\\nvidia\\cuda_nvrtc\\bin",
-  ].join(path.delimiter);
+let _cachedCudaPaths: string | null = null;
+
+function getCudaDllPaths(): string {
+  if (_cachedCudaPaths !== null) return _cachedCudaPaths;
+
+  try {
+    // Ask Python where the CUDA DLLs are
+    const result = execSync(
+      'python -c "import importlib.util, os; paths=[]; ' +
+      '[paths.append(os.path.join(os.path.dirname(importlib.util.find_spec(p).origin), d)) ' +
+      'for p,d in [(\'torch\',\'lib\'),(\'nvidia.cuda_nvrtc\',\'bin\')] ' +
+      'if importlib.util.find_spec(p)]; ' +
+      'print(os.pathsep.join([p for p in paths if os.path.isdir(p)]))"',
+      { encoding: "utf-8", timeout: 10000, windowsHide: true }
+    ).trim();
+    _cachedCudaPaths = result;
+  } catch {
+    _cachedCudaPaths = "";
+  }
+  return _cachedCudaPaths;
+}
+
+/**
+ * Build the environment variables for execution (includes dynamically detected CUDA DLL paths).
+ */
+function getExecEnv(): NodeJS.ProcessEnv {
+  const cudaPaths = getCudaDllPaths();
+  const envPath = cudaPaths
+    ? `${cudaPaths}${path.delimiter}${process.env.PATH || ""}`
+    : process.env.PATH || "";
 
   return {
-    ...process.env as Record<string, string>,
-    PATH: `${cudaPaths}${path.delimiter}${process.env.PATH || ""}`,
+    ...process.env,
+    PATH: envPath,
     PYTHONPATH: OUTPUT_DIR,
   };
 }
