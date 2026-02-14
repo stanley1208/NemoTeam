@@ -1,8 +1,98 @@
 import { AGENTS } from "./agents";
 import { streamNemotronChat, ChatMessage } from "./nemotron";
 import { AgentRole, SSEEvent, CodeBlock } from "@/types";
+import * as fs from "fs";
+import * as path from "path";
 
 const MAX_EVOLUTION_CYCLES = 3;
+const OUTPUT_DIR = path.join(process.cwd(), "output");
+
+/**
+ * Language to file extension mapping.
+ */
+const LANG_EXTENSIONS: Record<string, string> = {
+  python: "py",
+  javascript: "js",
+  typescript: "ts",
+  go: "go",
+  rust: "rs",
+  java: "java",
+  cpp: "cpp",
+  c: "c",
+  ruby: "rb",
+  php: "php",
+  swift: "swift",
+  kotlin: "kt",
+  bash: "sh",
+  shell: "sh",
+  sql: "sql",
+  html: "html",
+  css: "css",
+  json: "json",
+  yaml: "yml",
+  toml: "toml",
+  plaintext: "txt",
+};
+
+/**
+ * Clear and prepare the output directory.
+ */
+function prepareOutputDir(): void {
+  if (fs.existsSync(OUTPUT_DIR)) {
+    // Remove old generated files
+    const files = fs.readdirSync(OUTPUT_DIR);
+    for (const file of files) {
+      const filePath = path.join(OUTPUT_DIR, file);
+      if (fs.statSync(filePath).isFile()) {
+        fs.unlinkSync(filePath);
+      }
+    }
+  } else {
+    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  }
+}
+
+/**
+ * Save code blocks to the output directory.
+ * Returns the list of saved file paths.
+ */
+function saveCodeBlocks(blocks: CodeBlock[]): string[] {
+  if (!fs.existsSync(OUTPUT_DIR)) {
+    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  }
+
+  const savedPaths: string[] = [];
+
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    const ext = LANG_EXTENSIONS[block.language] || block.language || "txt";
+
+    // Use the filename from the code block, or generate one
+    let filename = block.filename;
+    if (!filename) {
+      filename = blocks.length === 1
+        ? `main.${ext}`
+        : `file_${i + 1}.${ext}`;
+    }
+
+    // Clean the filename (remove path separators for safety)
+    const safeName = filename.replace(/[/\\]/g, "_").replace(/[^a-zA-Z0-9._-]/g, "_");
+
+    // Remove the "// filename: ..." comment line from the code before saving
+    const cleanCode = block.code.replace(
+      /^(?:\/\/|#|--|\/\*)\s*filename:\s*.+?(?:\s*\*\/)?[\r\n]+/m,
+      ""
+    );
+
+    const filePath = path.join(OUTPUT_DIR, safeName);
+    fs.writeFileSync(filePath, cleanCode, "utf-8");
+
+    block.savedPath = filePath;
+    savedPaths.push(safeName);
+  }
+
+  return savedPaths;
+}
 
 /**
  * Extract code blocks from markdown-formatted text.
@@ -109,6 +199,9 @@ export async function* runOrchestration(
 ): AsyncGenerator<SSEEvent> {
   const history: { role: AgentRole; content: string }[] = [];
   let latestCode = "";
+
+  // Clear old output files
+  prepareOutputDir();
 
   // ──────────────────────────────────────────
   // PHASE 1: Initial pipeline
@@ -353,6 +446,26 @@ export async function* runOrchestration(
       if (event.type === "agent_complete") response = event.content || "";
     }
     history.push({ role: "tester", content: response });
+  }
+
+  // ──────────────────────────────────────────
+  // Save generated code to output/ folder
+  // ──────────────────────────────────────────
+  const finalBlocks = extractCodeBlocks(latestCode);
+  if (finalBlocks.length > 0) {
+    const savedFiles = saveCodeBlocks(finalBlocks);
+
+    // Re-emit updated code blocks with savedPath
+    for (const block of finalBlocks) {
+      yield { type: "code_update", role: "developer", code: block, timestamp: Date.now() };
+    }
+
+    yield {
+      type: "files_saved",
+      savedFiles,
+      outputDir: OUTPUT_DIR,
+      timestamp: Date.now(),
+    };
   }
 
   // ──────────────────────────────────────────

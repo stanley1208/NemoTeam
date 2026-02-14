@@ -3,11 +3,13 @@
 import { CodeBlock } from "@/types";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { Copy, Check, FileCode2 } from "lucide-react";
+import { Copy, Check, FileCode2, FolderOpen, Terminal } from "lucide-react";
 import { useState } from "react";
 
 interface CodePanelProps {
   codeBlocks: CodeBlock[];
+  savedFiles?: string[];
+  outputDir?: string;
 }
 
 function CodeBlockCard({ block, index }: { block: CodeBlock; index: number }) {
@@ -30,6 +32,11 @@ function CodeBlockCard({ block, index }: { block: CodeBlock; index: number }) {
           <span className="text-[11px] text-zinc-500 px-2 py-0.5 bg-white/5 rounded-md font-mono">
             {block.language}
           </span>
+          {block.savedPath && (
+            <span className="text-[10px] text-nvidia/70 px-2 py-0.5 bg-nvidia/10 rounded-md font-medium">
+              Saved
+            </span>
+          )}
         </div>
         <button
           onClick={handleCopy}
@@ -73,7 +80,74 @@ function CodeBlockCard({ block, index }: { block: CodeBlock; index: number }) {
   );
 }
 
-export default function CodePanel({ codeBlocks }: CodePanelProps) {
+function SavedFilesBanner({
+  savedFiles,
+  outputDir,
+}: {
+  savedFiles: string[];
+  outputDir: string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  // Determine how to run the first file
+  const mainFile = savedFiles[0];
+  const ext = mainFile?.split(".").pop()?.toLowerCase();
+  let runCommand = "";
+  if (ext === "py") runCommand = `python output/${mainFile}`;
+  else if (ext === "js") runCommand = `node output/${mainFile}`;
+  else if (ext === "ts") runCommand = `npx tsx output/${mainFile}`;
+  else if (ext === "go") runCommand = `go run output/${mainFile}`;
+  else if (ext === "rb") runCommand = `ruby output/${mainFile}`;
+  else if (ext === "sh") runCommand = `bash output/${mainFile}`;
+
+  const handleCopyCommand = async () => {
+    if (runCommand) {
+      await navigator.clipboard.writeText(runCommand);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div className="mx-5 mt-5 rounded-xl border border-nvidia/20 bg-nvidia/5 p-5">
+      <div className="flex items-center gap-3 mb-3">
+        <FolderOpen className="h-5 w-5 text-nvidia" />
+        <span className="text-sm font-bold text-nvidia">
+          Files Saved to output/
+        </span>
+      </div>
+      <div className="space-y-1.5 mb-4">
+        {savedFiles.map((file) => (
+          <div key={file} className="flex items-center gap-2 text-sm text-zinc-300">
+            <FileCode2 className="h-3.5 w-3.5 text-zinc-500" />
+            <span className="font-mono text-xs">output/{file}</span>
+          </div>
+        ))}
+      </div>
+      {runCommand && (
+        <div className="mt-4 pt-4 border-t border-nvidia/20">
+          <p className="text-xs text-zinc-400 mb-2.5 flex items-center gap-2">
+            <Terminal className="h-3.5 w-3.5" />
+            Run it now:
+          </p>
+          <button
+            onClick={handleCopyCommand}
+            className="w-full flex items-center justify-between rounded-lg bg-black/40 border border-white/[0.06] px-4 py-3 text-left font-mono text-sm text-nvidia hover:bg-black/60 transition-colors group"
+          >
+            <span>$ {runCommand}</span>
+            {copied ? (
+              <Check className="h-4 w-4 text-nvidia flex-shrink-0" />
+            ) : (
+              <Copy className="h-4 w-4 text-zinc-600 group-hover:text-zinc-400 flex-shrink-0" />
+            )}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function CodePanel({ codeBlocks, savedFiles, outputDir }: CodePanelProps) {
   if (codeBlocks.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-zinc-600">
@@ -89,14 +163,19 @@ export default function CodePanel({ codeBlocks }: CodePanelProps) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-5 space-y-5">
-      {codeBlocks.map((block, index) => (
-        <CodeBlockCard
-          key={`${block.filename || index}-${index}`}
-          block={block}
-          index={index}
-        />
-      ))}
+    <div className="flex-1 overflow-y-auto pb-5">
+      {savedFiles && savedFiles.length > 0 && outputDir && (
+        <SavedFilesBanner savedFiles={savedFiles} outputDir={outputDir} />
+      )}
+      <div className="p-5 space-y-5">
+        {codeBlocks.map((block, index) => (
+          <CodeBlockCard
+            key={`${block.filename || index}-${index}`}
+            block={block}
+            index={index}
+          />
+        ))}
+      </div>
     </div>
   );
 }

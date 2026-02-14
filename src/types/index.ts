@@ -25,6 +25,7 @@ export interface CodeBlock {
   language: string;
   code: string;
   filename?: string;
+  savedPath?: string;
 }
 
 export type WorkflowStatus =
@@ -38,6 +39,7 @@ export type SSEEventType =
   | "agent_chunk"
   | "agent_complete"
   | "code_update"
+  | "files_saved"
   | "evolution_cycle"
   | "workflow_complete"
   | "workflow_error";
@@ -50,6 +52,8 @@ export interface SSEEvent {
   error?: string;
   cycle?: number;
   maxCycles?: number;
+  savedFiles?: string[];
+  outputDir?: string;
   timestamp: number;
 }
 

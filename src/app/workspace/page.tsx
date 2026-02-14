@@ -30,6 +30,8 @@ function WorkspaceContent() {
   const [activeTab, setActiveTab] = useState<"chat" | "code">("chat");
   const [evolutionCycle, setEvolutionCycle] = useState(0);
   const [maxEvolutionCycles, setMaxEvolutionCycles] = useState(3);
+  const [savedFiles, setSavedFiles] = useState<string[]>([]);
+  const [outputDir, setOutputDir] = useState<string>("");
 
   const currentMessageId = useRef<string | null>(null);
   const hasAutoRun = useRef(false);
@@ -42,6 +44,8 @@ function WorkspaceContent() {
     setCompletedAgents([]);
     setStatus("running");
     setEvolutionCycle(0);
+    setSavedFiles([]);
+    setOutputDir("");
     currentMessageId.current = null;
 
     try {
@@ -158,6 +162,12 @@ function WorkspaceContent() {
               if (event.maxCycles) setMaxEvolutionCycles(event.maxCycles);
               // Reset completed agents for the new cycle
               setCompletedAgents([]);
+              break;
+            }
+
+            case "files_saved": {
+              if (event.savedFiles) setSavedFiles(event.savedFiles);
+              if (event.outputDir) setOutputDir(event.outputDir);
               break;
             }
 
@@ -297,7 +307,7 @@ function WorkspaceContent() {
               </span>
             )}
           </div>
-          <CodePanel codeBlocks={codeBlocks} />
+          <CodePanel codeBlocks={codeBlocks} savedFiles={savedFiles} outputDir={outputDir} />
         </div>
       </div>
     </div>

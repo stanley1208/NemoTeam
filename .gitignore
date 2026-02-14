@@ -27,6 +27,9 @@ yarn-error.log*
 .env
 .env.txt
 
+# generated output
+/output
+
 # vercel
 .vercel
 
