@@ -7,7 +7,7 @@ import { execSync } from "child_process";
 
 const MAX_EVOLUTION_CYCLES = 3;
 const MAX_EXECUTION_RETRIES = 10;
-const EXECUTION_TIMEOUT_MS = 120000; // 120 second timeout (GPU benchmarks / CPU comparisons need time)
+const EXECUTION_TIMEOUT_MS = 300000; // 300 second timeout (large GPU + CPU benchmarks need time)
 const OUTPUT_DIR = path.join(process.cwd(), "output");
 
 /**
@@ -75,7 +75,13 @@ function getSystemContext(): string {
   info.push("- All generated files are saved to an output/ directory. Subdirectories are supported.");
   info.push("- The main entry file MUST be named main.py (or contain 'main' in its name).");
   info.push("- For simple tasks, prefer a single file. For complex tasks, use proper package imports.");
-  info.push("- The code will be executed automatically after generation. It MUST run without errors.");
+  info.push("- The code will be executed automatically after generation. It MUST run without errors AND produce correct results.");
+
+  // Quality rules for ML/benchmark code
+  info.push("- For GPU vs CPU benchmarks: use LARGE datasets (10000+ points) and LARGE networks (512+ neurons per layer) so GPU speedup is clearly visible. Small workloads show no GPU advantage due to transfer overhead.");
+  info.push("- For neural networks: a well-implemented network MUST show decreasing loss and >70% accuracy on synthetic data. If accuracy is below 50%, the backpropagation or training loop has a bug.");
+  info.push("- For numerical code: use numerically stable implementations (e.g., log-sum-exp trick for softmax, clip gradients, proper weight initialization like He/Xavier).");
+  info.push("- IMPORTANT: The output will be validated automatically. Low accuracy, NaN values, or GPU slower than CPU will be flagged as failures and trigger auto-debugging.");
 
   _cachedSystemContext = info.join("\n");
   return _cachedSystemContext;
@@ -258,6 +264,121 @@ function tryAutoInstall(errorText: string): boolean {
 }
 
 /**
+ * Validate the quality of program output.
+ * Returns a description of issues found, or null if output looks good.
+ * This catches "code runs but results are wrong" scenarios.
+ */
+function validateOutputQuality(output: string): string | null {
+  const issues: string[] = [];
+  const lower = output.toLowerCase();
+
+  // 1. Check for NaN / Infinity in numerical output
+  const nanMatches = output.match(/\bnan\b/gi);
+  if (nanMatches && nanMatches.length >= 2) {
+    issues.push(`Output contains NaN values (${nanMatches.length} occurrences) — likely a numerical instability bug (exploding gradients, division by zero, or log of zero)`);
+  }
+  const infMatches = output.match(/\binf\b/gi);
+  if (infMatches && infMatches.length >= 2) {
+    issues.push(`Output contains Infinity values (${infMatches.length} occurrences) — numerical overflow`);
+  }
+
+  // 2. Check training accuracy if present
+  // Look for patterns like "accuracy: 0.33", "acc: 42%", "train acc: 0.41"
+  const accPatterns = [
+    /(?:train|training)\s*(?:acc|accuracy)[:\s]*([0-9.]+)/gi,
+    /(?:acc|accuracy)[:\s]*([0-9.]+)%?/gi,
+  ];
+  const accuracies: number[] = [];
+  for (const pat of accPatterns) {
+    let m;
+    while ((m = pat.exec(output)) !== null) {
+      let val = parseFloat(m[1]);
+      if (val > 1 && val <= 100) val /= 100; // convert percentage to decimal
+      if (val >= 0 && val <= 1) accuracies.push(val);
+    }
+  }
+
+  // If there are accuracy values and the FINAL ones are suspiciously low
+  if (accuracies.length >= 3) {
+    // Check last few accuracy readings (end of training)
+    const lastAccuracies = accuracies.slice(-4);
+    const avgFinalAcc = lastAccuracies.reduce((a, b) => a + b, 0) / lastAccuracies.length;
+    if (avgFinalAcc < 0.5) {
+      issues.push(
+        `Training accuracy is very low (final average: ${(avgFinalAcc * 100).toFixed(1)}%). ` +
+        `For most classification tasks, a properly implemented neural network should reach >70% accuracy. ` +
+        `This suggests bugs in: backpropagation gradients, learning rate (too high/low), weight initialization, ` +
+        `softmax/cross-entropy implementation, or data preprocessing.`
+      );
+    }
+  }
+
+  // 3. Check test accuracy specifically
+  const testAccPattern = /(?:test)\s*(?:acc|accuracy)[:\s]*([0-9.]+)%?/gi;
+  const testAccuracies: number[] = [];
+  let tm;
+  while ((tm = testAccPattern.exec(output)) !== null) {
+    let val = parseFloat(tm[1]);
+    if (val > 1 && val <= 100) val /= 100;
+    if (val >= 0 && val <= 1) testAccuracies.push(val);
+  }
+  if (testAccuracies.length >= 2) {
+    const lastTestAccs = testAccuracies.slice(-3);
+    const avgTestAcc = lastTestAccs.reduce((a, b) => a + b, 0) / lastTestAccs.length;
+    if (avgTestAcc < 0.1 && accuracies.length > 0) {
+      const avgTrainAcc = accuracies.slice(-3).reduce((a, b) => a + b, 0) / Math.min(accuracies.length, 3);
+      if (avgTrainAcc > avgTestAcc + 0.2) {
+        issues.push(
+          `Test accuracy (${(avgTestAcc * 100).toFixed(1)}%) is drastically lower than train accuracy (${(avgTrainAcc * 100).toFixed(1)}%). ` +
+          `This large gap suggests a bug in the test evaluation code, not just overfitting.`
+        );
+      }
+    }
+  }
+
+  // 4. Check for GPU vs CPU speedup if this is a benchmark
+  if (lower.includes("speedup") || (lower.includes("gpu time") && lower.includes("cpu time"))) {
+    const speedupMatch = output.match(/speedup[:\s]*([0-9.]+)x/i);
+    if (speedupMatch) {
+      const speedup = parseFloat(speedupMatch[1]);
+      if (speedup < 1.0) {
+        issues.push(
+          `GPU is SLOWER than CPU (${speedup}x). For a benchmark to demonstrate GPU acceleration, ` +
+          `the dataset and network must be large enough. Use at least 10,000+ data points and larger hidden layers (512+ neurons). ` +
+          `Small workloads have too much GPU transfer overhead to show speedup.`
+        );
+      }
+    }
+  }
+
+  // 5. Check for loss not decreasing (stuck training)
+  const lossPattern = /loss[:\s]*([0-9.]+)/gi;
+  const losses: number[] = [];
+  let lm;
+  while ((lm = lossPattern.exec(output)) !== null) {
+    const val = parseFloat(lm[1]);
+    if (val >= 0 && val < 100) losses.push(val);
+  }
+  if (losses.length >= 5) {
+    const firstLoss = losses[0];
+    const lastLoss = losses[losses.length - 1];
+    if (lastLoss >= firstLoss * 0.95) {
+      issues.push(
+        `Loss is NOT decreasing during training (first: ${firstLoss.toFixed(4)}, last: ${lastLoss.toFixed(4)}). ` +
+        `The network is not learning. Check: learning rate, gradient computation, weight updates.`
+      );
+    }
+  }
+
+  // 6. Check for all-zero output
+  if (/accuracy[:\s]*0\.0+[,\s]/g.test(output) && (output.match(/accuracy[:\s]*0\.0+[,\s]/g) || []).length > 5) {
+    issues.push("Multiple accuracy readings are exactly 0.0 — the model is producing constant predictions (all same class).");
+  }
+
+  return issues.length > 0 ? issues.join("\n\n") : null;
+}
+
+/**
  * Execute a saved code file and return the result.
  */
 function executeCode(filename: string): {
@@ -326,6 +447,18 @@ function executeCode(filename: string): {
         success: false,
         output: trimmed,
         error: `Code ran but produced error output:\n${trimmed}`,
+      };
+    }
+
+    // ── Output quality validation ──
+    // Even if the code ran without crashing, check if the results make sense.
+    // Catches: NaN outputs, suspiciously low accuracy, negative times, etc.
+    const qualityIssues = validateOutputQuality(trimmed);
+    if (qualityIssues) {
+      return {
+        success: false,
+        output: trimmed,
+        error: `Code ran without crashing but produced BAD RESULTS:\n${qualityIssues}\n\nFull output:\n${trimmed}`,
       };
     }
 
