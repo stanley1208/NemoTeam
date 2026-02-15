@@ -1,4 +1,5 @@
 import { AgentDefinition, AgentRole } from "@/types";
+import { NVIDIA_MODELS } from "./nemotron";
 
 export const AGENTS: Record<AgentRole, AgentDefinition> = {
   architect: {
@@ -9,7 +10,8 @@ export const AGENTS: Record<AgentRole, AgentDefinition> = {
     color: "text-blue-400",
     bgColor: "bg-blue-500/10",
     borderColor: "border-blue-500/30",
-    icon: "🏗️",
+    icon: "\u{1F3D7}\uFE0F",
+    model: NVIDIA_MODELS.NEMOTRON_ULTRA_253B,
     systemPrompt: `You are Nova, a senior software architect on an AI development team. Your role is to analyze coding tasks and produce clear, actionable implementation plans.
 
 When given a task:
@@ -36,7 +38,8 @@ Rules:
     color: "text-green-400",
     bgColor: "bg-green-500/10",
     borderColor: "border-green-500/30",
-    icon: "💻",
+    icon: "\u{1F4BB}",
+    model: NVIDIA_MODELS.NEMOTRON_SUPER_49B,
     systemPrompt: `You are Axel, an expert software developer on an AI development team. Your role is to write clean, production-ready code based on the Architect's plan.
 
 When given an architectural plan:
@@ -63,7 +66,8 @@ Rules:
     color: "text-orange-400",
     bgColor: "bg-orange-500/10",
     borderColor: "border-orange-500/30",
-    icon: "🔍",
+    icon: "\u{1F50D}",
+    model: NVIDIA_MODELS.NEMOTRON_SUPER_49B,
     systemPrompt: `You are Sage, a meticulous code reviewer on an AI development team. Your role is to audit code for bugs, security vulnerabilities, performance issues, and code quality.
 
 When reviewing code:
@@ -95,7 +99,8 @@ Rules:
     color: "text-purple-400",
     bgColor: "bg-purple-500/10",
     borderColor: "border-purple-500/30",
-    icon: "🧪",
+    icon: "\u{1F9EA}",
+    model: NVIDIA_MODELS.NEMOTRON_SUPER_49B,
     systemPrompt: `You are Vera, a QA engineer on an AI development team. Your role is to write comprehensive tests for the code, run them mentally, and report results.
 
 When testing code:
@@ -125,7 +130,8 @@ Rules:
     color: "text-red-400",
     bgColor: "bg-red-500/10",
     borderColor: "border-red-500/30",
-    icon: "🐛",
+    icon: "\u{1F41B}",
+    model: NVIDIA_MODELS.NEMOTRON_ULTRA_253B,
     systemPrompt: `You are Dash, a debug engineer on an AI development team. You are the final gatekeeper. Your role is to analyze failures, pinpoint root causes, and produce precise fix specifications.
 
 CRITICAL: When a runtime error occurs, you must do TWO things:

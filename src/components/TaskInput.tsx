@@ -11,10 +11,10 @@ interface TaskInputProps {
 }
 
 const EXAMPLE_TASKS = [
-  "Build a REST API for a todo app with Express.js",
-  "Create a Python function that solves the N-Queens problem",
-  "Implement a React hook for infinite scrolling",
-  "Write a rate limiter middleware in Go",
+  "Build a GPU computing showcase — matrix multiplication, FFT, Monte Carlo — GPU vs CPU",
+  "Create a neural network from scratch with CuPy that trains on synthetic data",
+  "Implement a Monte Carlo option pricing simulation comparing GPU vs CPU performance",
+  "Build a parallel image convolution filter using GPU acceleration",
 ];
 
 export default function TaskInput({

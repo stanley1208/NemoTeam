@@ -26,6 +26,7 @@ body {
   background-color: var(--color-surface);
   color: #e4e4e7;
   font-family:
+    var(--font-inter),
     "Inter",
     -apple-system,
     BlinkMacSystemFont,
@@ -123,6 +124,32 @@ body {
     linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
   background-size: 60px 60px;
+}
+
+/* ───── Success Glow (completion celebration) ───── */
+@keyframes successPulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(118, 185, 0, 0.15), inset 0 0 8px rgba(118, 185, 0, 0.05); }
+  50%      { box-shadow: 0 0 24px rgba(118, 185, 0, 0.35), inset 0 0 16px rgba(118, 185, 0, 0.08); }
+}
+.success-glow {
+  animation: successPulse 2s ease-in-out infinite;
+}
+
+/* ───── Execution progress bar ───── */
+@keyframes executionSlide {
+  0%   { width: 5%; }
+  50%  { width: 70%; }
+  100% { width: 95%; }
+}
+@keyframes executionPulseAnim {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1; }
+}
+.execution-bar {
+  animation: executionSlide 120s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+.execution-pulse {
+  animation: executionPulseAnim 2.5s ease-in-out infinite;
 }
 
 /* ───── Code block styling overrides ───── */

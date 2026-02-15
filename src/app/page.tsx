@@ -14,6 +14,8 @@ import {
   Sparkles,
   RefreshCw,
   ChevronRight,
+  Cpu,
+  Terminal,
 } from "lucide-react";
 import { AgentRole } from "@/types";
 
@@ -131,7 +133,7 @@ export default function Home() {
               <div className="inline-flex items-center gap-2.5 rounded-full bg-nvidia/10 border border-nvidia/20 px-5 py-2.5 text-sm">
                 <Sparkles className="h-4 w-4 text-nvidia" />
                 <span className="text-nvidia font-medium">
-                  Powered by NVIDIA Nemotron via NIM
+                  Powered by NVIDIA Nemotron Ultra 253B &amp; Super 49B via NIM
                 </span>
               </div>
             </div>
@@ -150,9 +152,9 @@ export default function Home() {
               className="mx-auto text-center text-zinc-400 leading-relaxed"
               style={{ maxWidth: "620px", fontSize: "1.125rem", marginTop: "32px" }}
             >
-              Watch specialized AI agents collaborate in real-time to architect,
-              code, review, and test your software — all powered by NVIDIA
-              Nemotron.
+              Five AI agents — each powered by the right NVIDIA Nemotron model
+              for their role — collaborate in real-time to architect, code,
+              review, test, and auto-debug your software via NIM.
             </p>
 
             {/* Agent Pipeline */}
@@ -243,27 +245,33 @@ export default function Home() {
               }}
             >
               <FeatureCard
-                icon={<Zap className="h-7 w-7" style={{ color: "#76B900" }} />}
-                title="Real-Time Streaming"
-                description="Watch agents think and write in real-time via SSE streaming. Every thought, every line of code, as it happens."
+                icon={<Cpu className="h-7 w-7" style={{ color: "#76B900" }} />}
+                title="Multi-Model Architecture"
+                description="Different NVIDIA Nemotron models for different roles: Ultra-253B for deep reasoning (Architect, Debugger) and Super-49B for fast code generation and analysis (Developer, Reviewer, Tester)."
                 accentColor="#76B900"
               />
               <FeatureCard
-                icon={<Shield className="h-7 w-7" style={{ color: "#fb923c" }} />}
-                title="Built-In Code Review"
-                description="The Reviewer catches bugs, security issues, and quality problems — triggering automatic revisions before delivery."
-                accentColor="#fb923c"
+                icon={<Terminal className="h-7 w-7" style={{ color: "#22d3ee" }} />}
+                title="Real GPU Execution"
+                description="Generated code is saved to disk and executed on your actual GPU/CPU. Not just 'looks correct' — it runs, and output quality is validated automatically."
+                accentColor="#22d3ee"
               />
               <FeatureCard
                 icon={<RefreshCw className="h-7 w-7" style={{ color: "#f87171" }} />}
-                title="Self-Evolving Debug Loop"
-                description="Inspired by OpenEvolve: if tests fail, the Debugger diagnoses root causes and the team re-iterates until all tests pass."
+                title="Self-Debugging Loop"
+                description="When code crashes, real error output feeds back to the Debugger for full code audit. Tracks error patterns and escalates when the same bug repeats."
                 accentColor="#f87171"
               />
               <FeatureCard
-                icon={<GitBranch className="h-7 w-7" style={{ color: "#c084fc" }} />}
-                title="Up to 3 Evolution Cycles"
-                description="The team evolves through Debug, Fix, Review, and Test cycles until the code is clean or max cycles are reached."
+                icon={<Shield className="h-7 w-7" style={{ color: "#fb923c" }} />}
+                title="Output Quality Validation"
+                description="Catches NaN values, low accuracy, GPU slower than CPU, stuck training — even if the code doesn't crash. Bad results trigger another debug cycle."
+                accentColor="#fb923c"
+              />
+              <FeatureCard
+                icon={<Zap className="h-7 w-7" style={{ color: "#c084fc" }} />}
+                title="Real-Time Streaming"
+                description="Watch all 5 agents think and write live via SSE. Every architectural decision, code line, review comment, and debug trace streams as it happens."
                 accentColor="#c084fc"
               />
             </div>
@@ -274,7 +282,7 @@ export default function Home() {
         <footer style={{ borderTop: "1px solid rgba(255,255,255,0.04)", padding: "40px 0" }}>
           <div className="section-wrapper flex flex-col sm:flex-row items-center justify-between gap-4">
             <p className="text-sm text-zinc-600">
-              Built with NVIDIA Nemotron via NIM API &middot; Open Source
+              Built with NVIDIA Nemotron Ultra 253B &amp; Super 49B via NIM API &middot; Open Source
             </p>
             <div className="flex items-center gap-8">
               <a

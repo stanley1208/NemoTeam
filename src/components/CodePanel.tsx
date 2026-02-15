@@ -1,10 +1,10 @@
 "use client";
 
-import { CodeBlock } from "@/types";
+import { CodeBlock, WorkflowSummary } from "@/types";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { Copy, Check, FileCode2, FolderOpen, Terminal, CheckCircle2, XCircle } from "lucide-react";
-import { useState } from "react";
+import { Copy, Check, FileCode2, FolderOpen, Terminal, CheckCircle2, XCircle, Cpu, Clock, RefreshCw, Zap, Play, Layers } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
 
 interface CodePanelProps {
   codeBlocks: CodeBlock[];
@@ -15,6 +15,8 @@ interface CodePanelProps {
     output?: string;
     error?: string;
   } | null;
+  workflowSummary?: WorkflowSummary | null;
+  isExecuting?: boolean;
 }
 
 function CodeBlockCard({ block, index }: { block: CodeBlock; index: number }) {
@@ -199,7 +201,161 @@ function ExecutionResultBanner({
   );
 }
 
-export default function CodePanel({ codeBlocks, savedFiles, outputDir, executionResult }: CodePanelProps) {
+/**
+ * Extract a short display name from the full NVIDIA model ID.
+ */
+function shortModelName(model: string): string {
+  if (model.includes("253b")) return "Ultra-253B";
+  if (model.includes("49b")) return "Super-49B";
+  const parts = model.split("/");
+  return parts[parts.length - 1];
+}
+
+/**
+ * Format milliseconds into a human-readable duration.
+ */
+function formatDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
+function ExecutionProgressBanner() {
+  const [elapsed, setElapsed] = useState(0);
+  const startTimeRef = useRef(Date.now());
+
+  useEffect(() => {
+    startTimeRef.current = Date.now();
+    const interval = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const formatElapsed = (s: number) => {
+    if (s < 60) return `${s}s`;
+    return `${Math.floor(s / 60)}m ${s % 60}s`;
+  };
+
+  return (
+    <div className="mx-5 mt-5 rounded-xl border border-nvidia/30 bg-nvidia/[0.06] p-5 execution-pulse">
+      <div className="flex items-center gap-3 mb-3">
+        <Play className="h-5 w-5 text-nvidia animate-pulse" />
+        <span className="text-sm font-bold text-nvidia">
+          Executing on hardware...
+        </span>
+      </div>
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 text-sm text-zinc-300">
+          <Clock className="h-4 w-4 text-zinc-500" />
+          <span className="font-mono">{formatElapsed(elapsed)}</span>
+        </div>
+        <div className="flex-1 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+          <div className="h-full bg-nvidia/60 rounded-full execution-bar" />
+        </div>
+      </div>
+      <p className="text-[11px] text-zinc-500 mt-3">
+        Running generated code with real hardware execution (GPU if available)
+      </p>
+    </div>
+  );
+}
+
+function WorkflowSummaryBanner({ summary }: { summary: WorkflowSummary }) {
+  return (
+    <div className={`mx-5 mt-5 rounded-xl border p-5 ${
+      summary.executionSuccess
+        ? "border-nvidia/40 bg-gradient-to-br from-nvidia/[0.08] to-transparent success-glow"
+        : "border-nvidia/30 bg-gradient-to-br from-nvidia/[0.08] to-transparent"
+    }`}>
+      <div className="flex items-center gap-3 mb-4">
+        {summary.executionSuccess ? (
+          <CheckCircle2 className="h-5 w-5 text-nvidia" />
+        ) : (
+          <Zap className="h-5 w-5 text-nvidia" />
+        )}
+        <span className="text-sm font-bold text-nvidia">
+          {summary.executionSuccess
+            ? "Completed Successfully — All Systems Go"
+            : "Workflow Complete"}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        {/* Duration */}
+        <div className="flex items-center gap-2.5 rounded-lg bg-black/20 px-3 py-2.5">
+          <Clock className="h-4 w-4 text-zinc-500 flex-shrink-0" />
+          <div>
+            <p className="text-[10px] text-zinc-500 uppercase tracking-wider">Duration</p>
+            <p className="text-sm font-semibold text-white">{formatDuration(summary.durationMs)}</p>
+          </div>
+        </div>
+
+        {/* Agent calls */}
+        <div className="flex items-center gap-2.5 rounded-lg bg-black/20 px-3 py-2.5">
+          <Cpu className="h-4 w-4 text-zinc-500 flex-shrink-0" />
+          <div>
+            <p className="text-[10px] text-zinc-500 uppercase tracking-wider">NIM API Calls</p>
+            <p className="text-sm font-semibold text-white">{summary.totalAgentCalls}</p>
+          </div>
+        </div>
+
+        {/* Evolution cycles */}
+        {summary.evolutionCycles > 0 && (
+          <div className="flex items-center gap-2.5 rounded-lg bg-black/20 px-3 py-2.5">
+            <RefreshCw className="h-4 w-4 text-zinc-500 flex-shrink-0" />
+            <div>
+              <p className="text-[10px] text-zinc-500 uppercase tracking-wider">Debug Cycles</p>
+              <p className="text-sm font-semibold text-white">{summary.evolutionCycles}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Execution attempts */}
+        {summary.executionAttempts > 0 && (
+          <div className="flex items-center gap-2.5 rounded-lg bg-black/20 px-3 py-2.5">
+            <Terminal className="h-4 w-4 text-zinc-500 flex-shrink-0" />
+            <div>
+              <p className="text-[10px] text-zinc-500 uppercase tracking-wider">Exec Retries</p>
+              <p className="text-sm font-semibold text-white">{summary.executionAttempts}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Re-architect count */}
+        {summary.rearchitectCount > 0 && (
+          <div className="flex items-center gap-2.5 rounded-lg bg-black/20 px-3 py-2.5">
+            <Layers className="h-4 w-4 text-zinc-500 flex-shrink-0" />
+            <div>
+              <p className="text-[10px] text-zinc-500 uppercase tracking-wider">Re-architects</p>
+              <p className="text-sm font-semibold text-white">{summary.rearchitectCount}</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Model breakdown */}
+      <div className="mt-4 pt-3 border-t border-white/[0.06]">
+        <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Models Used</p>
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(summary.modelCalls).map(([model, count]) => (
+            <span
+              key={model}
+              className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.04] border border-white/[0.08] px-2.5 py-1 text-[11px] font-mono text-zinc-400"
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${model.includes("253b") ? "bg-blue-400" : "bg-purple-400"}`} />
+              {shortModelName(model)} &times; {count}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function CodePanel({ codeBlocks, savedFiles, outputDir, executionResult, workflowSummary, isExecuting }: CodePanelProps) {
   if (codeBlocks.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-zinc-600">
@@ -216,6 +372,8 @@ export default function CodePanel({ codeBlocks, savedFiles, outputDir, execution
 
   return (
     <div className="flex-1 overflow-y-auto pb-5">
+      {workflowSummary && <WorkflowSummaryBanner summary={workflowSummary} />}
+      {isExecuting && <ExecutionProgressBanner />}
       {executionResult && <ExecutionResultBanner result={executionResult} />}
       {savedFiles && savedFiles.length > 0 && outputDir && (
         <SavedFilesBanner savedFiles={savedFiles} outputDir={outputDir} />

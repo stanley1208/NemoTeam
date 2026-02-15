@@ -13,6 +13,7 @@ import {
   CodeBlock,
   SSEEvent,
   WorkflowStatus,
+  WorkflowSummary,
 } from "@/types";
 import { Code2, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -37,8 +38,13 @@ function WorkspaceContent() {
     output?: string;
     error?: string;
   } | null>(null);
+  const [workflowSummary, setWorkflowSummary] = useState<WorkflowSummary | null>(null);
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [evolutionContent, setEvolutionContent] = useState<string>("");
+  const [escalationTier, setEscalationTier] = useState(0);
 
   const currentMessageId = useRef<string | null>(null);
+  const agentStartTime = useRef<number>(0);
   const hasAutoRun = useRef(false);
 
   const runWorkflow = useCallback(async (task: string) => {
@@ -52,7 +58,23 @@ function WorkspaceContent() {
     setSavedFiles([]);
     setOutputDir("");
     setExecutionResult(null);
+    setWorkflowSummary(null);
+    setIsExecuting(false);
+    setEvolutionContent("");
+    setEscalationTier(0);
     currentMessageId.current = null;
+    agentStartTime.current = 0;
+
+    // Echo the task as the first message so judges always see it
+    setMessages([
+      {
+        id: `task-${Date.now()}`,
+        role: "architect" as AgentRole,
+        content: task,
+        timestamp: Date.now(),
+        isSystem: true,
+      },
+    ]);
 
     try {
       const response = await fetch("/api/agents", {
@@ -94,6 +116,7 @@ function WorkspaceContent() {
             case "agent_start": {
               const msgId = `${event.role}-${Date.now()}`;
               currentMessageId.current = msgId;
+              agentStartTime.current = Date.now();
               setActiveAgent(event.role!);
               setMessages((prev) => [
                 ...prev,
@@ -124,6 +147,10 @@ function WorkspaceContent() {
             }
 
             case "agent_complete": {
+              const elapsed = agentStartTime.current > 0
+                ? Date.now() - agentStartTime.current
+                : undefined;
+              agentStartTime.current = 0;
               setMessages((prev) => {
                 const updated = [...prev];
                 const lastMsg = updated[updated.length - 1];
@@ -131,6 +158,7 @@ function WorkspaceContent() {
                   updated[updated.length - 1] = {
                     ...lastMsg,
                     isStreaming: false,
+                    durationMs: elapsed,
                   };
                 }
                 return updated;
@@ -165,35 +193,51 @@ function WorkspaceContent() {
 
             case "evolution_cycle": {
               setEvolutionCycle(event.cycle || 0);
-              if (event.maxCycles) setMaxEvolutionCycles(event.maxCycles);
+              if (event.maxCycles !== undefined) setMaxEvolutionCycles(event.maxCycles);
+              if (event.content) setEvolutionContent(event.content);
+              if (event.tier !== undefined) setEscalationTier(event.tier);
               // Reset completed agents for the new cycle
               setCompletedAgents([]);
+              // Insert a phase separator in chat
+              const cycleLabel = event.content || `Debug Cycle ${event.cycle}`;
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `cycle-${Date.now()}`,
+                  role: "debugger" as AgentRole,
+                  content: cycleLabel,
+                  timestamp: event.timestamp,
+                  isSystem: true,
+                },
+              ]);
               break;
             }
 
             case "files_saved": {
               if (event.savedFiles) setSavedFiles(event.savedFiles);
               if (event.outputDir) setOutputDir(event.outputDir);
-              break;
-            }
-
-            case "execution_start": {
-              setExecutionResult(null);
-              // Show execution as a system message
+              // Phase separator: entering execution phase
               setMessages((prev) => [
                 ...prev,
                 {
-                  id: `exec-start-${Date.now()}`,
+                  id: `phase-exec-${Date.now()}`,
                   role: "tester" as AgentRole,
-                  content: `**Executing generated code...**`,
+                  content: "Phase 3: Executing on hardware...",
                   timestamp: event.timestamp,
-                  isStreaming: false,
+                  isSystem: true,
                 },
               ]);
               break;
             }
 
+            case "execution_start": {
+              setExecutionResult(null);
+              setIsExecuting(true);
+              break;
+            }
+
             case "execution_result": {
+              setIsExecuting(false);
               const success = event.executionSuccess;
               const output = event.executionOutput || "";
               const error = event.executionError || "";
@@ -219,7 +263,9 @@ function WorkspaceContent() {
             case "workflow_complete": {
               setStatus("completed");
               setActiveAgent(null);
+              setIsExecuting(false);
               if (event.cycle !== undefined) setEvolutionCycle(event.cycle);
+              if (event.summary) setWorkflowSummary(event.summary);
               break;
             }
 
@@ -273,6 +319,8 @@ function WorkspaceContent() {
         status={status}
         evolutionCycle={evolutionCycle}
         maxEvolutionCycles={maxEvolutionCycles}
+        evolutionContent={evolutionContent}
+        escalationTier={escalationTier}
       />
 
       {/* Mobile tab switcher */}
@@ -352,7 +400,7 @@ function WorkspaceContent() {
               </span>
             )}
           </div>
-          <CodePanel codeBlocks={codeBlocks} savedFiles={savedFiles} outputDir={outputDir} executionResult={executionResult} />
+          <CodePanel codeBlocks={codeBlocks} savedFiles={savedFiles} outputDir={outputDir} executionResult={executionResult} workflowSummary={workflowSummary} isExecuting={isExecuting} />
         </div>
       </div>
     </div>

@@ -1,14 +1,44 @@
 import { AGENTS } from "./agents";
 import { streamNemotronChat, ChatMessage } from "./nemotron";
-import { AgentRole, SSEEvent, CodeBlock } from "@/types";
+import { AgentRole, SSEEvent, CodeBlock, WorkflowSummary } from "@/types";
 import * as fs from "fs";
 import * as path from "path";
-import { execSync } from "child_process";
+import { execSync, exec } from "child_process";
+import { promisify } from "util";
 
-const MAX_EVOLUTION_CYCLES = 3;
-const MAX_EXECUTION_RETRIES = 10;
-const EXECUTION_TIMEOUT_MS = 300000; // 300 second timeout (large GPU + CPU benchmarks need time)
+const execAsync = promisify(exec);
+
+// ── Open Evolve: Escalation strategy thresholds (NOT hard caps) ──
+// The system never gives up — it escalates strategy instead.
+const MENTAL_EVOLUTION_SOFT_CAP = 10;   // Proceed to real execution after this many mental test cycles
+const TIER2_THRESHOLD = 5;              // After N exec failures, add Reviewer to debug loop
+const REARCHITECT_THRESHOLD = 15;       // After N exec failures, loop back to Architect
+const REARCHITECT_INTERVAL = 10;        // Re-architect again every N failures after first
+const EXECUTION_TIMEOUT_MS = 300000;    // 300 second timeout per execution (large GPU + CPU benchmarks need time)
 const OUTPUT_DIR = path.join(process.cwd(), "output");
+
+// ──────────────────────────────────────────
+// Robust verdict matching
+//
+// LLMs don't always output exact strings.
+// These regex matchers catch common variations.
+// ──────────────────────────────────────────
+
+function verdictAllTestsPass(text: string): boolean {
+  return /(?:ALL\s+TESTS?\s+PASS|VERDICT[:\s]*(?:ALL\s+)?PASS|all\s+tests?\s+pass(?:ed|ing)?)/i.test(text);
+}
+
+function verdictTestsFailing(text: string): boolean {
+  return /(?:TESTS?\s+FAIL(?:ING|ED)?|VERDICT[:\s]*(?:TESTS?\s+)?FAIL)/i.test(text);
+}
+
+function verdictNeedsRevision(text: string): boolean {
+  return /(?:NEEDS?\s+REVISION|REVISIONS?\s+(?:NEEDED|REQUIRED|NECESSARY))/i.test(text);
+}
+
+function verdictCodeIsClean(text: string): boolean {
+  return /(?:CODE\s+IS\s+CLEAN|NO\s+(?:BUGS?|ISSUES?)\s+FOUND|FIXES\s+NEEDED[:\s]*0)/i.test(text);
+}
 
 /**
  * Detect system environment automatically.
@@ -242,12 +272,17 @@ function getExecEnv(): NodeJS.ProcessEnv {
 
 /**
  * Try to auto-install a missing Python package.
+ * Validates package names to prevent command injection.
  */
-function tryAutoInstall(errorText: string): boolean {
+async function tryAutoInstall(errorText: string): Promise<boolean> {
   const match = errorText.match(/No module named ['"]?(\w+)['"]?/i);
   if (!match) return false;
 
   const moduleName = match[1].toLowerCase();
+
+  // Validate package name: must be alphanumeric/hyphens/underscores only
+  if (!/^[a-zA-Z0-9_-]+$/.test(moduleName)) return false;
+
   // Don't try to install local modules or standard lib modules
   const skipModules = new Set([
     "utils", "network", "benchmark", "model", "config", "helpers",
@@ -255,9 +290,17 @@ function tryAutoInstall(errorText: string): boolean {
   ]);
   if (skipModules.has(moduleName)) return false;
 
+  // Only allow known-safe packages
+  const safePackages = new Set([
+    "numpy", "cupy", "torch", "pandas", "matplotlib", "scipy", "scikit-learn",
+    "sklearn", "requests", "flask", "fastapi", "pillow", "opencv-python",
+    "seaborn", "plotly", "sympy", "networkx", "tqdm", "rich", "colorama",
+  ]);
+  if (!safePackages.has(moduleName)) return false;
+
   try {
-    execSync(`pip install ${moduleName}`, {
-      timeout: 30000,
+    await execAsync(`pip install ${moduleName}`, {
+      timeout: 60000,
       encoding: "utf-8",
       windowsHide: true,
     });
@@ -411,12 +454,13 @@ function validateOutputQuality(output: string): string | null {
 
 /**
  * Execute a saved code file and return the result.
+ * Uses async exec so the Node.js event loop is not blocked during execution.
  */
-function executeCode(filename: string): {
+async function executeCode(filename: string): Promise<{
   success: boolean;
   output: string;
   error: string;
-} {
+}> {
   const ext = path.extname(filename).toLowerCase();
   const filePath = path.join(OUTPUT_DIR, filename);
   let cmd: string;
@@ -436,7 +480,7 @@ function executeCode(filename: string): {
   }
 
   try {
-    const output = execSync(cmd, {
+    const { stdout } = await execAsync(cmd, {
       timeout: EXECUTION_TIMEOUT_MS,
       encoding: "utf-8",
       cwd: OUTPUT_DIR,
@@ -445,7 +489,7 @@ function executeCode(filename: string): {
       windowsHide: true,
     });
 
-    const trimmed = output.trim();
+    const trimmed = (stdout || "").trim();
 
     // Check if the output contains signs of a caught/hidden error.
     // Includes both raw Python exceptions AND reformatted error messages
@@ -519,11 +563,11 @@ function executeCode(filename: string): {
 
     // Try auto-installing missing packages before giving up
     if (/no module named/i.test(fullError) || /ModuleNotFoundError/i.test(fullError)) {
-      const installed = tryAutoInstall(fullError);
+      const installed = await tryAutoInstall(fullError);
       if (installed) {
         // Retry execution after installing the package
         try {
-          const retryOutput = execSync(cmd, {
+          const retryResult = await execAsync(cmd, {
             timeout: EXECUTION_TIMEOUT_MS,
             encoding: "utf-8",
             cwd: OUTPUT_DIR,
@@ -531,7 +575,7 @@ function executeCode(filename: string): {
             maxBuffer: 1024 * 1024,
             windowsHide: true,
           });
-          return { success: true, output: retryOutput.trim(), error: "" };
+          return { success: true, output: (retryResult.stdout || "").trim(), error: "" };
         } catch {
           // Still failed after install — fall through to error handling
         }
@@ -639,7 +683,7 @@ async function* runAgent(
 
   let fullResponse = "";
   try {
-    for await (const chunk of streamNemotronChat(messages)) {
+    for await (const chunk of streamNemotronChat(messages, agent.model)) {
       fullResponse += chunk;
       yield {
         type: "agent_chunk",
@@ -668,22 +712,83 @@ async function* runAgent(
 }
 
 /**
+ * Rough token estimator (~4 chars per token on average for English + code).
+ * Used for context window management — not exact, but safe enough with margin.
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Maximum context tokens to use (leaves room for the model's output).
+ * The Ultra 253B model supports 128k input, but we keep a safe margin.
+ */
+const MAX_CONTEXT_TOKENS = 80_000;
+
+/**
  * Build the context message from conversation history.
+ * Includes smart truncation to stay within the model's context window.
+ *
+ * Priority (always kept in full):
+ *   1. System context + original task
+ *   2. Architect's plan (first architect message)
+ *   3. Latest code (last developer message)
+ *   4. Extra instructions
+ *   5. Most recent N messages
+ * Older middle messages are summarized if the total exceeds the budget.
  */
 function buildContext(
   task: string,
   history: { role: AgentRole; content: string }[],
   extraNote?: string
 ): string {
-  let context = `${getSystemContext()}\n\nOriginal task: ${task}\n\n--- Team Conversation ---\n`;
+  const systemCtx = getSystemContext();
+  const header = `${systemCtx}\n\nOriginal task: ${task}\n\n--- Team Conversation ---\n`;
+  const footer = extraNote ? `\n--- Additional Instructions ---\n${extraNote}\n` : "";
+
+  // Build the full context first and check if it fits
+  let fullContext = header;
   for (const msg of history) {
     const a = AGENTS[msg.role];
-    context += `\n[${a.name} - ${a.title}]:\n${msg.content}\n`;
+    fullContext += `\n[${a.name} - ${a.title}]:\n${msg.content}\n`;
   }
-  if (extraNote) {
-    context += `\n--- Additional Instructions ---\n${extraNote}\n`;
+  fullContext += footer;
+
+  if (estimateTokens(fullContext) <= MAX_CONTEXT_TOKENS) {
+    return fullContext;
   }
-  return context;
+
+  // Context is too long — apply smart truncation.
+  // Always keep: header, first architect plan, last 3 messages, footer.
+  const architectIdx = history.findIndex((h) => h.role === "architect");
+  const keepFirst = architectIdx >= 0 ? [history[architectIdx]] : [];
+  const keepLast = history.slice(-3);
+  const keepLastStart = Math.max(0, history.length - 3);
+
+  // Build the "must keep" parts
+  let trimmed = header;
+  for (const msg of keepFirst) {
+    const a = AGENTS[msg.role];
+    trimmed += `\n[${a.name} - ${a.title}]:\n${msg.content}\n`;
+  }
+
+  // Summarize middle messages
+  const middleStart = architectIdx >= 0 ? architectIdx + 1 : 0;
+  const middleEnd = keepLastStart;
+  if (middleEnd > middleStart) {
+    const skippedCount = middleEnd - middleStart;
+    const skippedRoles = history.slice(middleStart, middleEnd).map((h) => AGENTS[h.role].name);
+    trimmed += `\n[... ${skippedCount} earlier messages from ${[...new Set(skippedRoles)].join(", ")} omitted for brevity ...]\n`;
+  }
+
+  // Add the last 3 messages
+  for (const msg of keepLast) {
+    const a = AGENTS[msg.role];
+    trimmed += `\n[${a.name} - ${a.title}]:\n${msg.content}\n`;
+  }
+
+  trimmed += footer;
+  return trimmed;
 }
 
 /**
@@ -701,6 +806,9 @@ export async function* runOrchestration(
   const history: { role: AgentRole; content: string }[] = [];
   let latestCode = "";
 
+  // ── Metrics tracking ──
+  const workflowStartTime = Date.now();
+
   // Clear old output files
   prepareOutputDir();
 
@@ -716,7 +824,6 @@ export async function* runOrchestration(
 
   let response = "";
   for await (const event of runAgent("architect", architectMsgs)) {
-    if (typeof event === "string") { response = event; continue; }
     yield event;
     if (event.type === "agent_complete") response = event.content || "";
   }
@@ -730,7 +837,7 @@ export async function* runOrchestration(
 
   response = "";
   for await (const event of runAgent("developer", devMsgs)) {
-    if (typeof event === "string") { response = event; continue; }
+
     yield event;
     if (event.type === "agent_complete") response = event.content || "";
   }
@@ -751,14 +858,14 @@ export async function* runOrchestration(
 
   response = "";
   for await (const event of runAgent("reviewer", reviewMsgs)) {
-    if (typeof event === "string") { response = event; continue; }
+
     yield event;
     if (event.type === "agent_complete") response = event.content || "";
   }
   history.push({ role: "reviewer", content: response });
 
   // 3b. If reviewer needs revision, developer revises once
-  if (response.includes("NEEDS REVISION")) {
+  if (verdictNeedsRevision(response)) {
     const revMsgs: ChatMessage[] = [
       { role: "system", content: AGENTS.developer.systemPrompt },
       {
@@ -773,7 +880,7 @@ export async function* runOrchestration(
 
     response = "";
     for await (const event of runAgent("developer", revMsgs)) {
-      if (typeof event === "string") { response = event; continue; }
+  
       yield event;
       if (event.type === "agent_complete") response = event.content || "";
     }
@@ -794,33 +901,37 @@ export async function* runOrchestration(
 
   response = "";
   for await (const event of runAgent("tester", testMsgs)) {
-    if (typeof event === "string") { response = event; continue; }
+
     yield event;
     if (event.type === "agent_complete") response = event.content || "";
   }
   history.push({ role: "tester", content: response });
 
   // ──────────────────────────────────────────
-  // PHASE 2: Evolution loop (OpenEvolve-inspired)
+  // PHASE 2: Mental Evolution (Open Evolve — no hard cap)
   //
-  // If tests fail → Debugger → Developer → Reviewer → Tester
-  // Repeat until PASS or max cycles
+  // If Tester finds failures →
+  //   Debugger diagnoses → Developer fixes → Reviewer re-checks → Tester re-tests
+  // Soft cap: after MENTAL_EVOLUTION_SOFT_CAP cycles, proceed to real execution
+  // (the real runtime is the ultimate judge).
   // ──────────────────────────────────────────
 
   let cycle = 0;
+  let mentalCycle = 0;
 
   while (
-    cycle < MAX_EVOLUTION_CYCLES &&
-    !response.includes("ALL TESTS PASS") &&
-    response.includes("TESTS FAILING")
+    mentalCycle < MENTAL_EVOLUTION_SOFT_CAP &&
+    !verdictAllTestsPass(response)
   ) {
+    mentalCycle++;
     cycle++;
 
-    // Signal a new evolution cycle
     yield {
       type: "evolution_cycle",
       cycle,
-      maxCycles: MAX_EVOLUTION_CYCLES,
+      maxCycles: 0,
+      content: `Mental evolution cycle ${mentalCycle}`,
+      tier: 1,
       timestamp: Date.now(),
     };
 
@@ -832,23 +943,19 @@ export async function* runOrchestration(
         content: buildContext(
           task,
           history,
-          `This is evolution cycle ${cycle}/${MAX_EVOLUTION_CYCLES}. Analyze the test failures above and provide precise fix specifications.`
+          `Mental evolution cycle ${mentalCycle}. Analyze the test failures above and provide precise fix specifications.`
         ),
       },
     ];
 
     response = "";
     for await (const event of runAgent("debugger", debugMsgs)) {
-      if (typeof event === "string") { response = event; continue; }
       yield event;
       if (event.type === "agent_complete") response = event.content || "";
     }
     history.push({ role: "debugger", content: response });
 
-    // If debugger says code is clean, we're done
-    if (response.includes("CODE IS CLEAN")) {
-      break;
-    }
+    if (verdictCodeIsClean(response)) break;
 
     // B. Developer — apply the fixes
     const fixMsgs: ChatMessage[] = [
@@ -858,14 +965,13 @@ export async function* runOrchestration(
         content: buildContext(
           task,
           history,
-          `Evolution cycle ${cycle}/${MAX_EVOLUTION_CYCLES}: The Debugger has identified specific bugs. Apply ALL fixes precisely as specified. Output the complete fixed code.`
+          `Mental evolution cycle ${mentalCycle}: The Debugger has identified specific bugs. Apply ALL fixes precisely as specified. Output the complete fixed code.`
         ),
       },
     ];
 
     response = "";
     for await (const event of runAgent("developer", fixMsgs)) {
-      if (typeof event === "string") { response = event; continue; }
       yield event;
       if (event.type === "agent_complete") response = event.content || "";
     }
@@ -885,36 +991,29 @@ export async function* runOrchestration(
         content: buildContext(
           task,
           history,
-          `Evolution cycle ${cycle}: This is a re-review of fixed code. Focus on whether the Debugger's identified bugs have been properly addressed.`
+          `Mental evolution cycle ${mentalCycle}: Re-review of fixed code. Focus on whether the Debugger's identified bugs have been properly addressed.`
         ),
       },
     ];
 
     response = "";
     for await (const event of runAgent("reviewer", reReviewMsgs)) {
-      if (typeof event === "string") { response = event; continue; }
       yield event;
       if (event.type === "agent_complete") response = event.content || "";
     }
     history.push({ role: "reviewer", content: response });
 
-    // If reviewer still wants revision, developer fixes inline
-    if (response.includes("NEEDS REVISION")) {
+    if (verdictNeedsRevision(response)) {
       const quickFixMsgs: ChatMessage[] = [
         { role: "system", content: AGENTS.developer.systemPrompt },
         {
           role: "user",
-          content: buildContext(
-            task,
-            history,
-            "Quick fix pass: address the remaining review issues. Output the complete code."
-          ),
+          content: buildContext(task, history, "Quick fix pass: address the remaining review issues. Output the complete code."),
         },
       ];
 
       response = "";
       for await (const event of runAgent("developer", quickFixMsgs)) {
-        if (typeof event === "string") { response = event; continue; }
         yield event;
         if (event.type === "agent_complete") response = event.content || "";
       }
@@ -935,14 +1034,13 @@ export async function* runOrchestration(
         content: buildContext(
           task,
           history,
-          `Evolution cycle ${cycle}: Re-test the latest code. Check if previous failures are fixed and look for any new issues.`
+          `Mental evolution cycle ${mentalCycle}: Re-test the latest code. Check if previous failures are fixed and look for any new issues.`
         ),
       },
     ];
 
     response = "";
     for await (const event of runAgent("tester", reTestMsgs)) {
-      if (typeof event === "string") { response = event; continue; }
       yield event;
       if (event.type === "agent_complete") response = event.content || "";
     }
@@ -952,24 +1050,45 @@ export async function* runOrchestration(
   // ──────────────────────────────────────────
   // PHASE 3: Save, Execute, and Auto-Debug
   //
-  // Save code → Run it → If error, Debugger
-  // fixes → Re-save → Re-run.
-  // Tracks repeated errors and escalates
-  // instructions when the same bug recurs.
-  // Never gives up until max retries exhausted.
+  // Open Evolve: NO hard cap on retries.
+  // The system escalates through three tiers:
+  //
+  //   Tier 1 (attempts 1–TIER2_THRESHOLD):
+  //     Debugger → Developer (fast fix)
+  //
+  //   Tier 2 (attempts TIER2_THRESHOLD+1–REARCHITECT_THRESHOLD):
+  //     Debugger → Developer → Reviewer (deep review)
+  //
+  //   Tier 3 (every REARCHITECT_INTERVAL after REARCHITECT_THRESHOLD,
+  //           or on error thrashing):
+  //     Architect redesigns → Developer rewrites → Reviewer checks
+  //     (context reset — fresh start with error history preserved)
+  //
+  // The loop runs until the code executes successfully.
   // ──────────────────────────────────────────
 
   let executionSuccess = false;
   let executionAttempt = 0;
+  let rearchitectCount = 0;
 
-  // ── Error tracking ──
-  // Each entry: { signature, fullError, attempt }
+  // Persistent agent call counter (survives history clears on re-architect)
+  let totalAgentCalls = history.length;
+  const modelCallCounts: Record<string, number> = {};
+  for (const h of history) {
+    const model = AGENTS[h.role].model;
+    modelCallCounts[model] = (modelCallCounts[model] || 0) + 1;
+  }
+
+  /** Track an agent call for metrics (persists across re-architects). */
+  function trackAgentCall(role: AgentRole): void {
+    totalAgentCalls++;
+    const model = AGENTS[role].model;
+    modelCallCounts[model] = (modelCallCounts[model] || 0) + 1;
+  }
+
+  // ── Error tracking (persists across re-architects) ──
   const errorLog: { sig: string; full: string; attempt: number }[] = [];
 
-  /**
-   * Extract a short "signature" from an error so we can detect repeats.
-   * Takes the last meaningful error line (e.g. "ValueError: operands could not be broadcast...").
-   */
   function getErrorSignature(error: string): string {
     const lines = error.split("\n").map((l) => l.trim()).filter(Boolean);
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -980,9 +1099,6 @@ export async function* runOrchestration(
     return lines.slice(-1)[0]?.slice(0, 200) || "unknown error";
   }
 
-  /**
-   * Count consecutive occurrences of the same error at the end of errorLog.
-   */
   function getConsecutiveRepeatCount(sig: string): number {
     let count = 0;
     for (let i = errorLog.length - 1; i >= 0; i--) {
@@ -992,40 +1108,82 @@ export async function* runOrchestration(
     return count;
   }
 
-  /**
-   * Get all unique errors seen so far (deduped by signature).
-   */
   function getUniqueErrors(): { sig: string; full: string; count: number }[] {
     const map = new Map<string, { sig: string; full: string; count: number }>();
     for (const e of errorLog) {
       const existing = map.get(e.sig);
-      if (existing) {
-        existing.count++;
-      } else {
-        map.set(e.sig, { sig: e.sig, full: e.full, count: 1 });
-      }
+      if (existing) existing.count++;
+      else map.set(e.sig, { sig: e.sig, full: e.full, count: 1 });
     }
     return Array.from(map.values());
   }
 
-  // ── Capture key design context from Phase 1/2 ──
-  // Preserve the Architect plan and latest Reviewer insights so Phase 3
-  // agents still understand the intended design without the full verbose history.
-  const architectPlan = history.find((h) => h.role === "architect")?.content || "";
-  const lastReview = [...history].reverse().find((h) => h.role === "reviewer")?.content || "";
+  /**
+   * Detect error thrashing: last 5 errors are all DIFFERENT.
+   * Each fix is creating a new bug — patching won't work, need re-architect.
+   */
+  function isErrorThrashing(): boolean {
+    if (errorLog.length < 5) return false;
+    const last5 = errorLog.slice(-5).map((e) => e.sig);
+    return new Set(last5).size === last5.length;
+  }
+
+  /** Should the system loop back to the Architect at this attempt? */
+  function shouldReArchitect(attempt: number): boolean {
+    if (isErrorThrashing()) return true;
+    if (attempt < REARCHITECT_THRESHOLD) return false;
+    return (attempt - REARCHITECT_THRESHOLD) % REARCHITECT_INTERVAL === 0;
+  }
+
+  /** Determine the current escalation tier. */
+  function getEscalationTier(attempt: number): number {
+    if (shouldReArchitect(attempt)) return 3;
+    if (attempt > TIER2_THRESHOLD) return 2;
+    return 1;
+  }
+
+  // ── Mutable design context (updated on re-architect) ──
+  let architectPlan = history.find((h) => h.role === "architect")?.content || "";
+  let lastReview = [...history].reverse().find((h) => h.role === "reviewer")?.content || "";
 
   /**
-   * Build a focused BUT complete context for the execution debug loop.
-   *
-   * Includes:
-   *   1. System context (dynamic environment)
-   *   2. Original task
-   *   3. Architect's design plan (condensed) — preserves structural intent
-   *   4. Last Reviewer feedback — preserves quality insights
-   *   5. The LATEST code that was executed
-   *   6. The EXACT current runtime error
-   *   7. FULL error history — all previous errors (same AND different)
-   *   8. Escalation instructions based on error patterns
+   * Build context for re-architect calls.
+   * Gives the Architect: task, environment, ALL error history, current code.
+   * Does NOT include the old architecture (forces fresh thinking).
+   */
+  function buildReArchitectContext(): string {
+    let ctx = `${getSystemContext()}\n\nOriginal task: ${task}\n\n`;
+    ctx += `--- CRITICAL: RE-ARCHITECTURE REQUIRED ---\n`;
+    ctx += `The previous design has FAILED after ${executionAttempt} execution attempts. `;
+    ctx += `This is re-architecture attempt #${rearchitectCount + 1}.\n\n`;
+
+    const uniqueErrors = getUniqueErrors();
+    ctx += `--- ERROR HISTORY (${errorLog.length} total failures, ${uniqueErrors.length} unique errors) ---\n`;
+    uniqueErrors.forEach((e) => {
+      ctx += `  [${e.count}x] ${e.sig}\n`;
+    });
+    ctx += "\n";
+
+    if (isErrorThrashing()) {
+      ctx += `⚠️ ERROR THRASHING DETECTED: Each fix creates a NEW bug. The current approach is fundamentally flawed.\n\n`;
+    }
+
+    ctx += `--- CURRENT (FAILING) CODE ---\n${latestCode}\n\n`;
+
+    ctx += `--- INSTRUCTIONS ---\n`;
+    ctx += `You MUST design a COMPLETELY DIFFERENT architecture. Do NOT reuse the previous design.\n`;
+    ctx += `Constraints:\n`;
+    ctx += `1. Choose a DIFFERENT algorithm, data structure, or approach\n`;
+    ctx += `2. Simplify aggressively — a working simple solution beats a broken complex one\n`;
+    ctx += `3. Avoid the patterns that caused the errors listed above\n`;
+    ctx += `4. The code MUST run without errors on first execution\n`;
+    ctx += `5. Keep your response under 400 words\n`;
+
+    return ctx;
+  }
+
+  /**
+   * Build focused context for the execution debug loop (Tier 1 & 2).
    */
   function buildExecDebugContext(
     errorOutput: string,
@@ -1034,7 +1192,6 @@ export async function* runOrchestration(
   ): string {
     let ctx = `${getSystemContext()}\n\nOriginal task: ${task}\n\n`;
 
-    // ── Design context from Phase 1/2 (keeps agents grounded) ──
     if (architectPlan) {
       ctx += `--- ARCHITECT'S DESIGN PLAN (follow this structure) ---\n${architectPlan}\n\n`;
     }
@@ -1042,18 +1199,15 @@ export async function* runOrchestration(
       ctx += `--- LAST REVIEWER FEEDBACK (keep these fixes) ---\n${lastReview}\n\n`;
     }
 
-    // ── The latest code that was actually executed ──
     ctx += `--- LATEST CODE (this is what was executed and failed) ---\n${latestCode}\n\n`;
 
-    // ── Current error ──
-    ctx += `--- CURRENT RUNTIME ERROR (attempt ${attempt}/${MAX_EXECUTION_RETRIES}) ---\n`;
+    ctx += `--- CURRENT RUNTIME ERROR (attempt ${attempt}, no limit — will keep trying until success) ---\n`;
     ctx += `Error:\n${errorOutput}\n`;
     if (stdout && stdout !== errorOutput) {
       ctx += `\nPartial stdout before crash:\n${stdout}\n`;
     }
     ctx += "\n";
 
-    // ── Full error history (ALL errors, same or different) ──
     const uniqueErrors = getUniqueErrors();
     if (errorLog.length > 0) {
       ctx += `--- ERROR HISTORY (${errorLog.length} total failures, ${uniqueErrors.length} unique errors) ---\n`;
@@ -1062,7 +1216,6 @@ export async function* runOrchestration(
       });
       ctx += "\n";
 
-      // Show unique error summary with counts
       if (uniqueErrors.length > 1) {
         ctx += `--- UNIQUE ERRORS ENCOUNTERED ---\n`;
         uniqueErrors.forEach((e) => {
@@ -1074,7 +1227,6 @@ export async function* runOrchestration(
       }
     }
 
-    // ── Escalation based on current error pattern ──
     const currentSig = getErrorSignature(errorOutput);
     const consecutiveRepeats = getConsecutiveRepeatCount(currentSig);
 
@@ -1101,14 +1253,14 @@ export async function* runOrchestration(
     return ctx;
   }
 
-  while (executionAttempt < MAX_EXECUTION_RETRIES) {
+  // ── Main execution loop — runs until success (Open Evolve) ──
+  while (!executionSuccess) {
     // Save the latest code
     const blocks = extractCodeBlocks(latestCode);
     if (blocks.length === 0) break;
 
     const savedFiles = saveCodeBlocks(blocks);
 
-    // Emit updated code blocks
     for (const block of blocks) {
       yield { type: "code_update", role: "developer", code: block, timestamp: Date.now() };
     }
@@ -1120,18 +1272,16 @@ export async function* runOrchestration(
       timestamp: Date.now(),
     };
 
-    // Find the main file to run
     const mainFile = findMainFile(savedFiles);
     if (!mainFile) break;
 
-    // Execute the code
     yield {
       type: "execution_start",
       content: `Running ${mainFile}...`,
       timestamp: Date.now(),
     };
 
-    const result = executeCode(mainFile);
+    const result = await executeCode(mainFile);
 
     yield {
       type: "execution_result",
@@ -1146,50 +1296,142 @@ export async function* runOrchestration(
       break;
     }
 
-    // ── Execution failed — begin auto-debug ──
+    // ── Execution failed — auto-debug (never gives up) ──
     executionAttempt++;
 
-    // Track this error (both signature and full text)
     const rawError = result.error || result.output;
     const errorSig = getErrorSignature(rawError);
     errorLog.push({ sig: errorSig, full: rawError, attempt: executionAttempt });
 
-    // Analyze error patterns
     const consecutiveRepeats = getConsecutiveRepeatCount(errorSig);
     const uniqueErrors = getUniqueErrors();
     const totalUniqueCount = uniqueErrors.length;
-
-    if (executionAttempt >= MAX_EXECUTION_RETRIES) break;
+    const tier = getEscalationTier(executionAttempt);
 
     // Build status label for the UI
-    let statusLabel = `Execution failed — auto-debugging (attempt ${executionAttempt}/${MAX_EXECUTION_RETRIES})`;
+    let statusLabel: string;
+    if (tier === 3) {
+      statusLabel = `Re-architecting — previous design failed after ${executionAttempt} attempts`;
+    } else if (tier === 2) {
+      statusLabel = `Deep review — auto-debugging (attempt ${executionAttempt})`;
+    } else {
+      statusLabel = `Quick fix — auto-debugging (attempt ${executionAttempt})`;
+    }
     if (consecutiveRepeats >= 2) {
-      statusLabel += ` [SAME ERROR x${consecutiveRepeats} — escalating]`;
+      statusLabel += ` [SAME ERROR x${consecutiveRepeats}]`;
     } else if (totalUniqueCount > 1) {
-      statusLabel += ` [${totalUniqueCount} different errors seen — tracking all]`;
+      statusLabel += ` [${totalUniqueCount} different errors]`;
     }
 
     cycle++;
     yield {
       type: "evolution_cycle",
       cycle,
-      maxCycles: MAX_EVOLUTION_CYCLES + MAX_EXECUTION_RETRIES,
+      maxCycles: 0,
       content: statusLabel,
+      tier,
       timestamp: Date.now(),
     };
 
-    // Build focused context with full error history + design context
-    const execContext = buildExecDebugContext(
-      rawError,
-      result.output,
-      executionAttempt,
-    );
+    // ──────────────────────────────────────────
+    // TIER 3: Re-Architect (complete redesign)
+    // ──────────────────────────────────────────
+    if (tier === 3) {
+      rearchitectCount++;
 
-    // ── Debugger: diagnose crash + full code audit ──
-    // The Debugger always does TWO things:
-    //   A) Fix the specific crash
-    //   B) Audit the ENTIRE code for all other potential bugs
-    const multiFixNote = `\n\nIMPORTANT: After diagnosing the crash, you MUST also audit the ENTIRE code for ALL other potential bugs — wrong shapes, bad API calls, missing imports, logic errors, edge cases, type mismatches, etc. Fix EVERYTHING in this one round so we don't keep hitting new errors one at a time.`;
+      // Clear output dir for fresh start
+      prepareOutputDir();
+
+      // 1. Architect redesigns from scratch
+      const reArchCtx = buildReArchitectContext();
+      const reArchMsgs: ChatMessage[] = [
+        { role: "system", content: AGENTS.architect.systemPrompt },
+        { role: "user", content: reArchCtx },
+      ];
+
+      response = "";
+      for await (const event of runAgent("architect", reArchMsgs)) {
+        yield event;
+        if (event.type === "agent_complete") response = event.content || "";
+      }
+      trackAgentCall("architect");
+      architectPlan = response;
+
+      // 2. Developer rewrites from scratch
+      const rewriteCtx = `${getSystemContext()}\n\nOriginal task: ${task}\n\n--- NEW ARCHITECTURE (re-design #${rearchitectCount}) ---\n${architectPlan}\n\n--- ERRORS TO AVOID (from ${errorLog.length} previous failures) ---\n${getUniqueErrors().map((e) => `[${e.count}x] ${e.sig}`).join("\n")}\n\n--- Instructions ---\nImplement the NEW architecture above from scratch. This is a COMPLETE REWRITE, not a patch. Output the complete code for ALL files.`;
+
+      const rewriteMsgs: ChatMessage[] = [
+        { role: "system", content: AGENTS.developer.systemPrompt },
+        { role: "user", content: rewriteCtx },
+      ];
+
+      response = "";
+      for await (const event of runAgent("developer", rewriteMsgs)) {
+        yield event;
+        if (event.type === "agent_complete") response = event.content || "";
+      }
+      trackAgentCall("developer");
+      latestCode = response;
+
+      const rewriteBlocks = extractCodeBlocks(latestCode);
+      for (const block of rewriteBlocks) {
+        yield { type: "code_update", role: "developer", code: block, timestamp: Date.now() };
+      }
+
+      // 3. Reviewer checks the new code
+      const reReviewCtx = `${getSystemContext()}\n\nOriginal task: ${task}\n\n--- ARCHITECTURE ---\n${architectPlan}\n\n--- CODE ---\n${latestCode}\n\n--- Instructions ---\nThis is a complete rewrite (re-architecture #${rearchitectCount}). Review the code for correctness, focusing on the errors that plagued previous versions:\n${getUniqueErrors().map((e) => `- ${e.sig}`).join("\n")}\n\nFocus on correctness. If issues remain, say NEEDS REVISION.`;
+
+      const reReviewMsgs: ChatMessage[] = [
+        { role: "system", content: AGENTS.reviewer.systemPrompt },
+        { role: "user", content: reReviewCtx },
+      ];
+
+      response = "";
+      for await (const event of runAgent("reviewer", reReviewMsgs)) {
+        yield event;
+        if (event.type === "agent_complete") response = event.content || "";
+      }
+      trackAgentCall("reviewer");
+      lastReview = response;
+
+      // If reviewer wants revision, developer fixes
+      if (verdictNeedsRevision(response)) {
+        const fixCtx = `${getSystemContext()}\n\nOriginal task: ${task}\n\n--- ARCHITECTURE ---\n${architectPlan}\n\n--- CURRENT CODE ---\n${latestCode}\n\n--- REVIEWER FEEDBACK ---\n${lastReview}\n\n--- Instructions ---\nAddress ALL reviewer feedback. Output the complete corrected code for ALL files.`;
+
+        const fixMsgs: ChatMessage[] = [
+          { role: "system", content: AGENTS.developer.systemPrompt },
+          { role: "user", content: fixCtx },
+        ];
+
+        response = "";
+        for await (const event of runAgent("developer", fixMsgs)) {
+          yield event;
+          if (event.type === "agent_complete") response = event.content || "";
+        }
+        trackAgentCall("developer");
+        latestCode = response;
+
+        const fixedBlocks = extractCodeBlocks(latestCode);
+        for (const block of fixedBlocks) {
+          yield { type: "code_update", role: "developer", code: block, timestamp: Date.now() };
+        }
+      }
+
+      // Clear conversation history (fresh context), but errorLog persists
+      history.length = 0;
+      history.push({ role: "architect", content: architectPlan });
+      history.push({ role: "developer", content: latestCode });
+      history.push({ role: "reviewer", content: lastReview });
+
+      continue; // Loop back to save → execute
+    }
+
+    // ──────────────────────────────────────────
+    // TIER 1 & 2: Debugger + Developer (+ Reviewer for Tier 2)
+    // ──────────────────────────────────────────
+    const execContext = buildExecDebugContext(rawError, result.output, executionAttempt);
+
+    const multiFixNote = `\n\nIMPORTANT: After diagnosing the crash, you MUST also audit the ENTIRE code for ALL other potential bugs — wrong shapes, bad API calls, missing imports, logic errors, edge cases, type mismatches, etc. Fix EVERYTHING in this one round.`;
 
     let debugInstruction: string;
     if (consecutiveRepeats >= 3) {
@@ -1197,7 +1439,7 @@ export async function* runOrchestration(
     } else if (consecutiveRepeats >= 2) {
       debugInstruction = `WARNING: This is the same error as last time — your previous fix did not work. Analyze WHY it didn't work and propose a DIFFERENT fix approach.${multiFixNote}`;
     } else if (totalUniqueCount > 1) {
-      debugInstruction = `The code crashed with a NEW error (different from previous attempts). The previous fix resolved the old bug but introduced a new one. Diagnose the NEW error, and also check that your fix does NOT reintroduce any of the ${totalUniqueCount - 1} previously fixed errors (listed in error history).${multiFixNote}`;
+      debugInstruction = `The code crashed with a NEW error (different from previous attempts). Diagnose the NEW error, and also check that your fix does NOT reintroduce any of the ${totalUniqueCount - 1} previously fixed errors.${multiFixNote}`;
     } else {
       debugInstruction = `The code was executed and CRASHED with a real runtime error. Diagnose the exact root cause.${multiFixNote}`;
     }
@@ -1209,23 +1451,23 @@ export async function* runOrchestration(
 
     response = "";
     for await (const event of runAgent("debugger", execDebugMsgs)) {
-      if (typeof event === "string") { response = event; continue; }
       yield event;
       if (event.type === "agent_complete") response = event.content || "";
     }
+    trackAgentCall("debugger");
 
-    // ── Developer: apply ALL fixes at once ──
-    const allFixNote = `\n\nCRITICAL: Apply ALL fixes identified by the Debugger — not just the crash, but every bug found during the full code audit. The goal is to fix EVERY issue in one pass so the code runs clean on the next execution.`;
+    // Developer applies fixes
+    const allFixNote = `\n\nCRITICAL: Apply ALL fixes identified by the Debugger — not just the crash, but every bug found during the full code audit.`;
 
     let devInstruction: string;
     if (consecutiveRepeats >= 3) {
-      devInstruction = `CRITICAL: You have tried to fix this ${consecutiveRepeats} times and FAILED. The SAME error keeps happening. You MUST:\n1. REWRITE the broken section completely using a FUNDAMENTALLY different algorithm\n2. Do NOT copy-paste your previous code with minor tweaks\n3. Add print() statements to verify values at key steps\n4. Simplify if needed — working simple code > broken complex code\n\nThe Debugger found these issues:\n${response}${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files.`;
+      devInstruction = `CRITICAL: You have tried to fix this ${consecutiveRepeats} times and FAILED. REWRITE the broken section using a FUNDAMENTALLY different algorithm.\n\nThe Debugger found:\n${response}${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files.`;
     } else if (consecutiveRepeats >= 2) {
-      devInstruction = `Your previous fix did NOT resolve the error. The Debugger found:\n${response}\n\nTry a DIFFERENT approach this time.${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files.`;
+      devInstruction = `Your previous fix did NOT resolve the error. The Debugger found:\n${response}\n\nTry a DIFFERENT approach.${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files.`;
     } else if (totalUniqueCount > 1) {
-      devInstruction = `The previous fix resolved the old bug but introduced a NEW error. The Debugger's full analysis:\n${response}\n\nFix ALL issues found, and MAKE SURE you do NOT reintroduce any of the ${totalUniqueCount - 1} previously fixed bugs.${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files.`;
+      devInstruction = `The previous fix introduced a NEW error. The Debugger's analysis:\n${response}\n\nFix ALL issues and do NOT reintroduce previous bugs.${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files.`;
     } else {
-      devInstruction = `The code crashed during execution. The Debugger's full analysis:\n${response}${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files. Make sure ALL imports and API calls are correct.`;
+      devInstruction = `The code crashed. The Debugger's analysis:\n${response}${allFixNote}\n\nOutput the COMPLETE corrected code for ALL files.`;
     }
 
     const execFixMsgs: ChatMessage[] = [
@@ -1235,20 +1477,71 @@ export async function* runOrchestration(
 
     response = "";
     for await (const event of runAgent("developer", execFixMsgs)) {
-      if (typeof event === "string") { response = event; continue; }
       yield event;
       if (event.type === "agent_complete") response = event.content || "";
     }
+    trackAgentCall("developer");
     latestCode = response;
+
+    // ── Tier 2: Add Reviewer check before re-executing ──
+    if (tier >= 2) {
+      const reviewCtx = `${getSystemContext()}\n\nOriginal task: ${task}\n\n--- ARCHITECTURE ---\n${architectPlan}\n\n--- FIXED CODE ---\n${latestCode}\n\n--- Instructions ---\nExecution debug attempt ${executionAttempt} (Tier 2 deep review). Review the fixed code for remaining bugs, especially:\n${getUniqueErrors().map((e) => `- ${e.sig}`).join("\n")}\n\nFocus on correctness. If issues remain, say NEEDS REVISION.`;
+
+      const tier2ReviewMsgs: ChatMessage[] = [
+        { role: "system", content: AGENTS.reviewer.systemPrompt },
+        { role: "user", content: reviewCtx },
+      ];
+
+      response = "";
+      for await (const event of runAgent("reviewer", tier2ReviewMsgs)) {
+        yield event;
+        if (event.type === "agent_complete") response = event.content || "";
+      }
+      trackAgentCall("reviewer");
+      lastReview = response;
+
+      if (verdictNeedsRevision(response)) {
+        const revFixCtx = `${getSystemContext()}\n\nOriginal task: ${task}\n\n--- CURRENT CODE ---\n${latestCode}\n\n--- REVIEWER FEEDBACK ---\n${lastReview}\n\n--- Instructions ---\nAddress ALL reviewer feedback. Output the complete corrected code.`;
+
+        const revFixMsgs: ChatMessage[] = [
+          { role: "system", content: AGENTS.developer.systemPrompt },
+          { role: "user", content: revFixCtx },
+        ];
+
+        response = "";
+        for await (const event of runAgent("developer", revFixMsgs)) {
+          yield event;
+          if (event.type === "agent_complete") response = event.content || "";
+        }
+        trackAgentCall("developer");
+        latestCode = response;
+
+        const revFixBlocks = extractCodeBlocks(latestCode);
+        for (const block of revFixBlocks) {
+          yield { type: "code_update", role: "developer", code: block, timestamp: Date.now() };
+        }
+      }
+    }
   }
 
   // ──────────────────────────────────────────
-  // Done
+  // Done — build summary metrics
   // ──────────────────────────────────────────
+  const summary: WorkflowSummary = {
+    totalAgentCalls,
+    modelCalls: modelCallCounts,
+    evolutionCycles: cycle,
+    executionAttempts: executionAttempt,
+    executionSuccess,
+    durationMs: Date.now() - workflowStartTime,
+    rearchitectCount,
+  };
+
   yield {
     type: "workflow_complete",
     cycle,
     executionSuccess,
+    summary,
     timestamp: Date.now(),
   };
 }

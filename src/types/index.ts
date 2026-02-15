@@ -10,6 +10,7 @@ export interface AgentDefinition {
   borderColor: string;
   icon: string;
   systemPrompt: string;
+  model: string;
 }
 
 export interface AgentMessage {
@@ -19,6 +20,10 @@ export interface AgentMessage {
   timestamp: number;
   isStreaming?: boolean;
   evolutionCycle?: number;
+  /** Agent response time in milliseconds */
+  durationMs?: number;
+  /** System messages (task echo, phase labels) — rendered as centered labels, not agent bubbles */
+  isSystem?: boolean;
 }
 
 export interface CodeBlock {
@@ -46,6 +51,16 @@ export type SSEEventType =
   | "workflow_complete"
   | "workflow_error";
 
+export interface WorkflowSummary {
+  totalAgentCalls: number;
+  modelCalls: Record<string, number>;
+  evolutionCycles: number;
+  executionAttempts: number;
+  executionSuccess: boolean;
+  durationMs: number;
+  rearchitectCount: number;
+}
+
 export interface SSEEvent {
   type: SSEEventType;
   role?: AgentRole;
@@ -59,6 +74,9 @@ export interface SSEEvent {
   executionSuccess?: boolean;
   executionOutput?: string;
   executionError?: string;
+  summary?: WorkflowSummary;
+  /** Escalation tier: 1=quick fix, 2=deep review, 3=re-architect */
+  tier?: number;
   timestamp: number;
 }
 
